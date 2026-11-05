@@ -62,11 +62,16 @@ def convert(df: pd.DataFrame, split: str, max_turns: int) -> tuple[list[dict], d
         db_id = _get(row, "db_id", "extra_info.db_id", "env_extras.db_id")
         source = _get(row, "data", "extra_info.data", "env_extras.data") or "synsql"
         gold = _get(row, "reward_spec.ground_truth", "reward_model.ground_truth", "extra_info.gold_sql", "sql")
-        try:
-            schema, knowledge, question = parse_skyrl_prompt(_user_text(row["prompt"]))
-        except Exception:
-            stats["parse_fail"] += 1
-            continue
+        # Newer SkyRL files have schema / question / external_knowledge as columns.
+        # Older ones only have the prompt, so fall back to parsing it.
+        schema, question = row.get("schema"), row.get("question")
+        knowledge = row.get("external_knowledge") or ""
+        if not schema or not question:
+            try:
+                schema, knowledge, question = parse_skyrl_prompt(_user_text(row["prompt"]))
+            except Exception:
+                stats["parse_fail"] += 1
+                continue
         if not os.path.exists(sqlw.db_file_for(source, db_id)):
             stats["no_db"] += 1
             continue
