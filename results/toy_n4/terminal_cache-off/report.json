@@ -1,0 +1,37 @@
+{
+  "rollouts": 160,
+  "gen_turns": 299,
+  "terminal": {
+    "tool_calls": 139,
+    "classes": {
+      "cold": 113,
+      "timing": 7,
+      "would_hit": 19
+    },
+    "hit_rate": 0.1366906474820144,
+    "timing_miss_rate": 0.050359712230215826,
+    "upper_bound_hit_rate": 0.18705035971223022,
+    "tool_seconds_total": 49.29867386817932,
+    "tool_seconds_by_class": {
+      "cold": 45.35566306114197,
+      "timing": 1.1213645935058594,
+      "would_hit": 2.821646213531494
+    },
+    "by_call_position": {
+      "1": {
+        "cold": 100,
+        "timing": 7,
+        "would_hit": 19
+      },
+      "2": {
+        "cold": 11
+      },
+      "3": {
+        "cold": 2
+      }
+    }
+  },
+  "mean_reward": 0.225,
+  "gen_seconds_total": 259.51103711128235
+}
+wrote 139 rows -> /pscratch/sd/y/yy2445/rsched/runs/terminal-off-1104-223311-60839791/tool_calls.csv

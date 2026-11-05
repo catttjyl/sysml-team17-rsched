@@ -1,0 +1,40 @@
+{
+  "rollouts": 160,
+  "gen_turns": 311,
+  "terminal": {
+    "tool_calls": 151,
+    "classes": {
+      "timing": 6,
+      "cold": 130,
+      "hit": 15
+    },
+    "hit_rate": 0.09933774834437085,
+    "timing_miss_rate": 0.039735099337748346,
+    "upper_bound_hit_rate": 0.1390728476821192,
+    "tool_seconds_total": 83.32538104057312,
+    "tool_seconds_by_class": {
+      "timing": 0.9961333274841309,
+      "cold": 82.2797429561615,
+      "hit": 0.049504756927490234
+    },
+    "by_call_position": {
+      "1": {
+        "timing": 6,
+        "cold": 110,
+        "hit": 15
+      },
+      "2": {
+        "cold": 14
+      },
+      "3": {
+        "cold": 4
+      },
+      "4": {
+        "cold": 2
+      }
+    }
+  },
+  "mean_reward": 0.2,
+  "gen_seconds_total": 271.0706436634064
+}
+wrote 151 rows -> /pscratch/sd/y/yy2445/rsched/runs/terminal-tvcache-1104-222810-60839791/tool_calls.csv

@@ -1,0 +1,46 @@
+{
+  "rollouts": 160,
+  "gen_turns": 326,
+  "sql": {
+    "tool_calls": 166,
+    "classes": {
+      "cold": 121,
+      "timing": 2,
+      "hit": 43
+    },
+    "hit_rate": 0.25903614457831325,
+    "timing_miss_rate": 0.012048192771084338,
+    "upper_bound_hit_rate": 0.2710843373493976,
+    "tool_seconds_total": 10.501189231872559,
+    "tool_seconds_by_class": {
+      "cold": 10.31327223777771,
+      "timing": 0.17650532722473145,
+      "hit": 0.011411666870117188
+    },
+    "by_call_position": {
+      "1": {
+        "cold": 109,
+        "timing": 2,
+        "hit": 39
+      },
+      "2": {
+        "hit": 2,
+        "cold": 6
+      },
+      "3": {
+        "hit": 1,
+        "cold": 3
+      },
+      "4": {
+        "hit": 1,
+        "cold": 1
+      },
+      "5": {
+        "cold": 2
+      }
+    }
+  },
+  "mean_reward": -0.8875,
+  "gen_seconds_total": 241.61562156677246
+}
+wrote 166 rows -> /pscratch/sd/y/yy2445/rsched/runs/sql-tvcache-1104-221823-60839791/tool_calls.csv
