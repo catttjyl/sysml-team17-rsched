@@ -3,7 +3,7 @@ name = "rsched"
 version = "0.1.0"
 description = "Reuse-aware rollout scheduling for cached agentic RL (veRL + TVCache)"
 requires-python = ">=3.10"
-dependencies = ["pandas", "pyarrow"]   # verl + tvclient are installed separately (see launch/install.sh)
+dependencies = ["pandas", "pyarrow", "pyyaml"]   # verl + tvclient are installed separately (see launch/install.sh)
 
 [build-system]
 requires = ["setuptools>=61"]

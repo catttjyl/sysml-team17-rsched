@@ -1,9 +1,6 @@
 # Source this on Perlmutter (login or compute node):  source launch/env.sh
 # Everything big (venv, model weights, datasets, caches) goes under $RSCHED_ROOT,
-# which defaults to your scratch. To share one install across the team, point it
-# at the class project's CFS / common-software dir instead, e.g.
-#   export RSCHED_ROOT=/global/common/software/<project>/rsched   (software)
-#   export RSCHED_DATA=/global/cfs/cdirs/<project>/rsched/data     (data)
+# which defaults to your scratch.
 # NOTE: $PSCRATCH is purged for files not accessed in 8 weeks.
 
 export RSCHED_HOME="${RSCHED_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"

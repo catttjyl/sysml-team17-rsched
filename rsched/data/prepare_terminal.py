@@ -14,8 +14,6 @@ import os
 
 import pandas as pd
 
-from rsched.workloads.terminal_tasks import load_tasks
-
 SYSTEM = (
     "You are an expert Linux user working in a terminal. Use the `bash` tool to inspect and change files "
     "in the current working directory. Work step by step and verify your result. When the task is complete, "
@@ -23,7 +21,27 @@ SYSTEM = (
 )
 
 
+def make_row(task_id: str, instruction: str, split: str, index: int, **extra_info) -> dict:
+    return {
+        "data_source": "rsched_terminal",
+        "agent_name": "tvcache_terminal_agent",
+        "prompt": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": instruction}],
+        "ability": "terminal",
+        "reward_model": {"style": "rule", "ground_truth": ""},
+        "extra_info": {
+            "index": index,
+            "split": split,
+            "task": task_id,
+            "tvcache_task_id": f"term|{task_id}",
+            **extra_info,
+        },
+    }
+
+
 def main() -> None:
+    # Imported here so prepare_terminal_bench can use make_row without tvclient.
+    from rsched.workloads.terminal_tasks import load_tasks
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--repeat", type=int, default=4)
@@ -37,21 +55,7 @@ def main() -> None:
         recs = []
         for r in range(rep):
             for t in ts:
-                recs.append(
-                    {
-                        "data_source": "rsched_terminal",
-                        "agent_name": "tvcache_terminal_agent",
-                        "prompt": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": t.instruction}],
-                        "ability": "terminal",
-                        "reward_model": {"style": "rule", "ground_truth": ""},
-                        "extra_info": {
-                            "index": len(recs),
-                            "split": split,
-                            "task": t.task_id,
-                            "tvcache_task_id": f"term|{t.task_id}",
-                        },
-                    }
-                )
+                recs.append(make_row(t.task_id, t.instruction, split, len(recs)))
         pd.DataFrame(recs).to_parquet(os.path.join(args.out, f"{split}.parquet"))
         print(f"{split}: {len(recs)} rows ({len(ts)} tasks) -> {args.out}/{split}.parquet")
 

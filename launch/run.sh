@@ -16,6 +16,7 @@ WORKLOAD="${WORKLOAD:-sql}"            # sql | terminal
 CACHE="${CACHE:-tvcache}"              # tvcache | off
 MODEL="${MODEL:-$RSCHED_DATA/models/Qwen2.5-1.5B-Instruct}"
 SQL_DATA="${SQL_DATA:-sql_toy}"        # sql_toy (bring-up) | sql (SkyRL-SQL-653)
+TERMINAL_DATA="${TERMINAL_DATA:-terminal}"  # terminal (built-in) | terminal_easy | terminal_medium
 NGPUS="${NGPUS:-4}"
 STEPS="${STEPS:-5}"
 BATCH="${BATCH:-8}"                    # prompts per step
@@ -35,7 +36,8 @@ case "$WORKLOAD" in
     DATA_DIR="$RSCHED_DATA/$SQL_DATA"
     TOOLS="$RSCHED_HOME/configs/sql_tools.yaml" ;;
   terminal)
-    DATA_DIR="$RSCHED_DATA/terminal"
+    DATA_DIR="$RSCHED_DATA/$TERMINAL_DATA"
+    if [ -f "$DATA_DIR/tasks.json" ]; then export RSCHED_TERMINAL_TASKS="$DATA_DIR/tasks.json"; fi
     TOOLS="$RSCHED_HOME/configs/terminal_tools.yaml" ;;
   *) echo "unknown WORKLOAD=$WORKLOAD"; exit 1 ;;
 esac

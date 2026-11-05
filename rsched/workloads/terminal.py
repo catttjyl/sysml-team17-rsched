@@ -115,6 +115,9 @@ class LocalDirSandbox(Sandbox):
         live = _new_dir("live")
         if self.env_id is None:
             task = get_task(self.task_name)
+            if task.image:
+                # Its default test is `true`, so a folder sandbox would score every rollout as a pass.
+                raise RuntimeError(f"{task.task_id} needs a container sandbox, which is not available yet")
             os.makedirs(live)
             for rel, content in task.files.items():
                 p = os.path.join(live, rel)

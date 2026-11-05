@@ -24,6 +24,12 @@ class TerminalTask:
     setup: str = ""  # bash run once in a fresh sandbox after files are written
     test: str = "true"  # bash, exit 0 == pass
     executable: tuple[str, ...] = ()
+    # Container tasks (Terminal-Bench 1), from prepare_terminal_bench. Empty for the built-in tasks.
+    image: str = ""
+    task_dir: str = ""
+    build_context: str = "."
+    dockerfile: str = "Dockerfile"
+    difficulty: str = ""
 
 
 _LOG = "\n".join(

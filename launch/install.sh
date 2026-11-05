@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time install. Run on a LOGIN node (needs internet; ~15-25 min, ~20 GB):
+# One-time install. Run on a LOGIN node:
 #   bash install.sh
 
 set -euo pipefail
