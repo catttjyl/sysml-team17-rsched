@@ -1,0 +1,18 @@
+# Registered via actor_rollout_ref.rollout.agent.agent_loop_config_path.
+# Dataset rows pick one with their `agent_name` column.
+# Runtime overrides (exported by the sbatch scripts, inherited by Ray workers):
+#   RSCHED_CACHE=tvcache|off   TVCACHE_HOST / TVCACHE_PORT   RSCHED_TIMELINE_DIR
+#   RSCHED_SQL_DB_ROOT          RSCHED_SANDBOX_ROOT           RSCHED_TERMINAL_TASKS
+- name: tvcache_sql_agent
+  _target_: rsched.agent_loop.TVCacheToolAgentLoop
+  workload: sql
+  cache: tvcache
+  tvcache_host: 127.0.0.1
+  tvcache_port: 7878
+
+- name: tvcache_terminal_agent
+  _target_: rsched.agent_loop.TVCacheToolAgentLoop
+  workload: terminal
+  cache: tvcache
+  tvcache_host: 127.0.0.1
+  tvcache_port: 7878

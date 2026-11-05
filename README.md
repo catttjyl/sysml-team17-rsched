@@ -1,0 +1,90 @@
+# reuse-sched: veRL + TVCache pipeline (Team 17)
+
+This is the minimum runnable pipeline for _Reuse-aware rollout scheduling for cached agentic RL_.
+It runs veRL GRPO with tool calls served through **TVCache** and logs a per-call timeline.
+Two workloads are included:
+
+| workload                              | tool               | state                      | sandbox                                      | cache key                |
+| ------------------------------------- | ------------------ | -------------------------- | -------------------------------------------- | ------------------------ |
+| `sql` (SkyRL-SQL-653, plus a toy set) | `execute_sql(sql)` | read-only DB, so stateless | handle to the `.sqlite` file                 | the current query only   |
+| `terminal` (Terminal-Bench style)     | `bash(command)`    | mutating                   | one directory per sandbox, forked by copying | the full command history |
+
+Pinned versions: **veRL v0.9.1** (its own `uv.lock`: torch 2.11+cu130, vLLM 0.24), tvcache-rust `main`, tvclient `main`.
+
+## How it fits together
+
+```
+veRL main_ppo (GRPO) ── AgentLoopWorker (Ray) ── TVCacheToolAgentLoop   (one per rollout)
+                                                  │ subclass of veRL ToolAgentLoop
+                                                  ├─ generation turns → vLLM            (logged: gen_start/gen_end)
+                                                  ├─ tool call → tvclient.TvcacheToolExecutor.lookup_or_execute(history)
+                                                  │              ├─ hit  → cached value
+                                                  │              └─ miss → fork deepest cached sandbox, run suffix, insert
+                                                  │                                     (logged: tool  t_start/t_end/hit/key)
+                                                  └─ end → workload.score() → output.reward_score
+                                                          (terminal: test also goes through the cache)
+TVCache server (Rust, :7878, same node)    nvidia-smi sampler → gpu.csv
+```
+
+- `rsched/agent_loop.py`: the agent loop. Registered through `configs/agent_loops.yaml`. Dataset rows pick it with `agent_name`.
+- `rsched/workloads/{sql,terminal}.py`: the `ToolCall` and `Sandbox` implementations for tvclient, plus the reward for each workload.
+- `rsched/timeline.py`: JSONL events, one file per worker process.
+- `rsched/analysis/timeline_report.py`: computes hit rate and splits misses into **cold / timing / late**, then gives the timing-miss upper bound and a breakdown by call position (for H1).
+- `RSCHED_CACHE=off` runs the same thing without the cache. Keys are still logged, so you can compute the hit rate the cache would have had.
+
+## Perlmutter quick start
+
+```bash
+ssh -i ~/.ssh/nersc <user>@perlmutter.nersc.gov
+git clone <this repo> ~/reuse-sched && cd ~/reuse-sched
+
+bash launch/install.sh        # login node, one time: uv, rust, veRL v0.9.1 env, TVCache build (~20 min)
+bash launch/data.sh           # login node: Qwen2.5-1.5B-Instruct, toy SQL DBs, terminal tasks
+
+# interactive bring-up (debug QOS, 4×A100)
+salloc -N 1 -C gpu -q interactive -t 01:00:00 --gpus-per-node=4 -A <account>
+WORKLOAD=sql      bash launch/run.sh
+WORKLOAD=terminal bash launch/run.sh
+WORKLOAD=terminal CACHE=off bash launch/run.sh   # baseline
+
+# or batch
+mkdir -p logs && sbatch -A <account> launch/train.sbatch
+sbatch -A <account> --export=ALL,WORKLOAD=terminal launch/train.sbatch
+```
+
+Each run writes `$PSCRATCH/rsched/runs/<name>/`:
+`timeline/*.jsonl`, `tool_calls.csv` (every call with its miss class), `report.json`, `gpu.csv`, `tvcache.log`, `tvcache_dump.json` (the Tool Call Graphs), and `train.log`.
+
+You can tune the run with environment variables on `run.sh`: `MODEL`, `STEPS` (5), `BATCH` (8 prompts), `N` (4 rollouts per prompt), `MAX_TURNS` (6), `PROMPT_LEN`/`RESP_LEN` (4096), `TP`, `NGPUS`. Anything after the script name is passed to veRL as a Hydra override.
+
+Real SkyRL-SQL data needs about 50 GB. Run `FULL_SQL=1 bash launch/data.sh`, then `WORKLOAD=sql SQL_DATA=sql bash launch/run.sh`.
+
+For a shared team install, set `RSCHED_ROOT` (and `RSCHED_DATA`) to a project CFS or common-software directory before running the scripts. Read `launch/env.sh` for the details. `$PSCRATCH` is purged after 8 weeks without access.
+
+## Miss classes (draft definition from the proposal)
+
+Take a call that missed at time _t_ with key _K_:
+
+- **cold**: no earlier call with key _K_ exists.
+- **timing**: an earlier call with key _K_ was issued before _t_ but had **not finished** by _t_. Its filler was still in flight, so this is the miss that scheduling can recover.
+- **late**: an earlier call with key _K_ had already finished, yet this call still missed. Causes include an uncacheable result, eviction or a lost insert race.
+
+The **upper bound** is (hits + timing) / calls.
+
+## Tests (CPU, no GPU needed)
+
+```bash
+TVCACHE_BIN=$TVCACHE_BIN pytest -q tests/
+```
+
+This starts a real TVCache server and drives the real `TVCacheToolAgentLoop` tool path with scripted LLM turns. It checks rewards, cache hits on a second wave, the timeline, and the cache-off baseline. The script also shows the effect the project studies: 4 concurrent siblings that share their first call all record **timing** misses.
+
+## Status, caveats and next steps
+
+- **Verified locally:** the TVCache build, the tvclient integration, both workloads, rewards, timeline logging and analysis, and every veRL Hydra override in `run.sh` (composed against the v0.9.1 config).
+- **Not yet verified, needs Perlmutter:** the full GRPO loop on GPUs (vLLM, FSDP and the real hermes tool-call parsing). The first `run.sh` on a debug node is the test. Paste errors from `train.log` into the team channel or into Claude.
+- The TVCache server's port is hard-coded to 7878 upstream, so only one run per node can use the cache.
+- The terminal sandbox is a plain directory and **not a security boundary**. Real Terminal-Bench tasks ship Docker images, so the next step is a `podman-hpc` `Sandbox` backend that uses container commit/checkpoint for `fork()`. Converted tasks can be loaded with `RSCHED_TERMINAL_TASKS=tasks.json` (same fields as `terminal_tasks.py`).
+- SQL uses native function calling (hermes), where SkyRL uses `<sql>` tags. The reward follows SkyRL: -1 when there is no `<solution>`, 0 for a wrong result set, 1 for a correct one. The `<think>` format check is not applied.
+- Queries are whitespace-normalized before keying, which is semantics-preserving.
+- The global step is not logged directly. Use `uid` (one per prompt per step) together with wall-clock time.

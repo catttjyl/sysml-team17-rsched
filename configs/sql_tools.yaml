@@ -1,0 +1,18 @@
+tools:
+  - class_name: rsched.tools.SchemaOnlyTool
+    config:
+      type: native
+    tool_schema:
+      type: function
+      function:
+        name: execute_sql
+        description: >-
+          Execute a read-only SQLite query against the task database and return
+          the result rows (tab-separated, first 50 rows).
+        parameters:
+          type: object
+          properties:
+            sql:
+              type: string
+              description: A single SQLite SELECT statement.
+          required: [sql]
