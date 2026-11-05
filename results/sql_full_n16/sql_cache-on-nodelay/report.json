@@ -1,0 +1,47 @@
+{
+  "rollouts": 2560,
+  "gen_turns": 3148,
+  "sql": {
+    "tool_calls": 587,
+    "classes": {
+      "cold": 555,
+      "hit": 31,
+      "timing": 1
+    },
+    "hit_rate": 0.05281090289608177,
+    "timing_miss_rate": 0.0017035775127768314,
+    "upper_bound_hit_rate": 0.054514480408858604,
+    "tool_seconds_total": 1.6540980339050293,
+    "tool_seconds_by_class": {
+      "cold": 1.643423318862915,
+      "hit": 0.00827336311340332,
+      "timing": 0.0024013519287109375
+    },
+    "by_call_position": {
+      "1": {
+        "cold": 477,
+        "hit": 8,
+        "timing": 1
+      },
+      "2": {
+        "hit": 7,
+        "cold": 35
+      },
+      "3": {
+        "cold": 18,
+        "hit": 8
+      },
+      "4": {
+        "hit": 5,
+        "cold": 14
+      },
+      "5": {
+        "hit": 3,
+        "cold": 11
+      }
+    }
+  },
+  "mean_reward": -0.0359375,
+  "gen_seconds_total": 3225.5990073680878
+}
+wrote 587 rows -> /pscratch/sd/y/yy2445/rsched/runs/sql-full_n16_cache-on_nodelay/tool_calls.csv

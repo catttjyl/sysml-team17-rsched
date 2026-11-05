@@ -34,7 +34,7 @@ With cache off, "hit" means "would have hit": the same key had already finished.
 - Tool calls are fast in both toy workloads. The median call takes about 0.1 s for SQL and for terminal.
 - 3 terminal calls hit the 30 s timeout (task `top-error`). They make up most of the terminal tool time in the table.
 - All timing misses are on the first tool call. This fits H1.
-- Cold calls are slower with the cache on (median 0.16 s) than off (0.10 s). This is likely cache overhead (lookup, sandbox copy, insert). Small sample, so this needs a proper check.
+- Cold calls are slower with the cache on (median 0.16 s) than off (0.10 s). Most of this came from a TVCache bug (TCP_NODELAY not set). These runs are from before the fix. See `results/sql_full_n16/README.md`.
 - Toy SQL has only 12 tasks, so prompts repeat across steps. Many SQL hits come from earlier steps, not from siblings.
 - The toy calls are too fast to test H2. We need real Terminal-Bench tasks for that.
 - Mean reward is low on SQL (-0.89). The model often does not output `<solution>`.

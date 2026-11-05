@@ -18,22 +18,23 @@ Done
 - Runs end to end on Perlmutter (1 node, 4x A100) for both workloads, with the cache on and off.
 - `install.sh` works on Perlmutter. It builds TVCache with gcc and patches a broken flash-attn URL in veRL's lock file.
 - `prepare_sql.py` loads the full SkyRL-SQL data (653 train, 1034 validation tasks).
+- Found and fixed a TVCache bug that added about 85 ms to every call (TCP_NODELAY not set). `install.sh` applies the fix. Details in `results/sql_full_n16/README.md`.
 - Toy runs: `results/toy_n4/`.
-- Full SkyRL-SQL runs, 16 rollouts per prompt, 20 steps, cache on and off: `results/sql_full_n16/`.
+- Full SkyRL-SQL runs, 16 rollouts per prompt, 20 steps, cache on (before and after the fix) and off: `results/sql_full_n16/`.
 
 First findings
-- Timing misses are 1 to 5% of tool calls. On full SQL they are about 1%.
+- Timing misses are rare: 1 to 5% of tool calls, and under 1% on full SQL after the fix.
 - All timing misses are on the first tool call. This fits H1.
-- SQL tool calls are very fast. A query takes about 2 ms, and all tool time is about 1.4% of generation time. Scheduling can save almost nothing on SQL. This fits H2.
-- The cache adds about 85 ms to each SQL call, so on SQL it makes tool calls slower.
+- Faster tool calls mean fewer timing misses. After the fix, timing misses on SQL dropped from 7 to 1.
+- SQL tool calls are very fast (about 2 ms) and take under 0.1% of generation time. Scheduling can save almost nothing on SQL. This fits H2.
+- After the fix, the cache adds about 1 ms per call.
 - Toy terminal calls are also fast (median about 0.1 s), so they cannot show a scheduling gain either.
 
 Next
-- Find where the 85 ms of cache overhead per call goes.
 - A podman-hpc sandbox for real Terminal-Bench tasks, where tool calls are slow. Converted tasks can already be loaded with `RSCHED_TERMINAL_TASKS=tasks.json` (same fields as `terminal_tasks.py`).
 - Trace analysis on the full SQL runs.
 - Simulator v0 that replays the traces.
-- Ask Bhaskar about cache overhead and about running Terminal-Bench sandboxes on Perlmutter.
+- Report the TCP_NODELAY fix upstream, and find out how to run Terminal-Bench sandboxes on Perlmutter.
 
 Known limits
 - The TVCache port is fixed at 7878, so only one cache run fits on a node.

@@ -30,6 +30,11 @@ clone https://github.com/abhivijay96/tvclient.git     "$RSCHED_SRC/tvclient"    
 # veRL v0.9.1's uv.lock points at a flash-attn wheel URL that now 404s; the wheel moved to a py/torch-tagged release.
 sed -i 's|releases/download/flash-attention-v2.8.3/flash_attn-2.8.3-cp312|releases/download/flash-attention-v2.8.3-py3.12-torch2.11.0/flash_attn-2.8.3-cp312|' "$RSCHED_SRC/verl/uv.lock"
 
+# TVCache writes each reply in several small pieces without TCP_NODELAY, so every
+# request waits about 40 ms on Nagle plus delayed ACK. Turn Nagle off.
+grep -q set_nodelay "$RSCHED_SRC/tvcache-rust/src/main.rs" || \
+  sed -i 's|let stream = tcp_stream;|let _ = tcp_stream.set_nodelay(true);\n                let stream = tcp_stream;|' "$RSCHED_SRC/tvcache-rust/src/main.rs"
+
 # --- TVCache server ---------------------------------------------------------
 ( cd "$RSCHED_SRC/tvcache-rust" && CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc cargo build --release )
 echo "tvcache binary: $TVCACHE_BIN"

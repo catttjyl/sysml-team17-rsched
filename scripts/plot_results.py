@@ -37,12 +37,13 @@ plt.rcParams.update({
 def run_label(name):
     workload, cache = name.split("_", 1)
     workload = "SQL" if workload == "sql" else workload.capitalize()
-    return f"{workload}, {cache.replace('-', ' ')}"
+    cache = cache.replace("-nodelay", ", fixed").replace("-", " ")
+    return f"{workload}, {cache}"
 
 
 def load_runs(root):
     runs = {}
-    order = {"cache-on": 0, "cache-off": 1}
+    order = {"cache-on": 0, "cache-on-nodelay": 1, "cache-off": 2}
     dirs = sorted(root.iterdir(), key=lambda d: (not d.name.startswith("sql"), order.get(d.name.split("_")[-1], 2), d.name))
     for d in dirs:
         csv = d / "tool_calls.csv"
@@ -134,8 +135,11 @@ def plot_latency(runs, out, timeout=5.0):
     ax.minorticks_off()
     ax.set_yticks(range(1, len(names) + 1), [run_label(n) for n in names])
     ax.invert_yaxis()
-    ax.set_xlabel(f"Seconds per cold call, log scale ({dropped} calls that timed out are not shown)")
-    ax.set_title("Cold calls are slower with the cache on", loc="left", fontsize=12)
+    label = "Seconds per cold call, log scale"
+    if dropped:
+        label += f" ({dropped} calls that timed out are not shown)"
+    ax.set_xlabel(label)
+    ax.set_title("Time per cold call", loc="left", fontsize=12)
     fig.tight_layout()
     fig.savefig(out / "tool_latency.png", bbox_inches="tight")
     plt.close(fig)
