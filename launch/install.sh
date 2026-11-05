@@ -27,9 +27,11 @@ clone() {  # clone <url> <dir> <ref>
 clone https://github.com/volcengine/verl.git          "$RSCHED_SRC/verl"         "$VERL_REF"
 clone https://github.com/abhivijay96/tvcache-rust.git "$RSCHED_SRC/tvcache-rust" "$TVCACHE_REF"
 clone https://github.com/abhivijay96/tvclient.git     "$RSCHED_SRC/tvclient"     "$TVCLIENT_REF"
+# veRL v0.9.1's uv.lock points at a flash-attn wheel URL that now 404s; the wheel moved to a py/torch-tagged release.
+sed -i 's|releases/download/flash-attention-v2.8.3/flash_attn-2.8.3-cp312|releases/download/flash-attention-v2.8.3-py3.12-torch2.11.0/flash_attn-2.8.3-cp312|' "$RSCHED_SRC/verl/uv.lock"
 
 # --- TVCache server ---------------------------------------------------------
-( cd "$RSCHED_SRC/tvcache-rust" && cargo build --release )
+( cd "$RSCHED_SRC/tvcache-rust" && CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc cargo build --release )
 echo "tvcache binary: $TVCACHE_BIN"
 
 # --- Python env: veRL's own lockfile (vLLM rollout + FSDP training) -----------
