@@ -11,6 +11,39 @@ Two workloads are included:
 
 Pinned versions: **veRL v0.9.1** (its own `uv.lock`: torch 2.11+cu130, vLLM 0.24), tvcache-rust `main`, tvclient `main`.
 
+## Progress
+
+Done
+- Tested locally: TVCache build, tvclient, both workloads, rewards, logging and analysis, and the veRL settings in `run.sh`.
+- Runs end to end on Perlmutter (1 node, 4x A100) for both workloads, with the cache on and off.
+- `install.sh` works on Perlmutter. It builds TVCache with gcc and patches a broken flash-attn URL in veRL's lock file.
+- `prepare_sql.py` loads the full SkyRL-SQL data (653 train, 1034 validation tasks).
+- First toy traces and plots are in `results/toy_n4/`. Its README has the numbers.
+
+First findings (toy data, small sample)
+- Timing misses are 1 to 5% of tool calls.
+- All timing misses are on the first tool call. This fits H1.
+- Toy tool calls are fast (median about 0.1 s), so they cannot test H2.
+- Cold calls are slower with the cache on (median 0.16 s) than off (0.10 s). This looks like cache overhead.
+
+Running now
+- Full SkyRL-SQL, 16 rollouts per prompt, 20 steps, cache on and cache off.
+
+Next
+- Trace analysis on the full SQL runs.
+- Simulator v0 that replays the traces.
+- Measure cache overhead on its own.
+- A podman-hpc sandbox for real Terminal-Bench tasks. Converted tasks can already be loaded with `RSCHED_TERMINAL_TASKS=tasks.json` (same fields as `terminal_tasks.py`).
+- Ask Bhaskar about cache overhead and about running Terminal-Bench sandboxes on Perlmutter.
+
+Known limits
+- The TVCache port is fixed at 7878, so only one cache run fits on a node.
+- The terminal sandbox is a plain folder, not an isolated container.
+- SQL uses native function calling, while SkyRL uses `<sql>` tags. The reward follows SkyRL: -1 with no `<solution>`, 0 for a wrong result, 1 for a correct one. The `<think>` format check is not applied.
+- SQL queries are whitespace-normalized before they become cache keys. This does not change their meaning.
+- The global step is not logged. Use `uid` (one per prompt per step) with wall-clock time.
+- "DataLoader worker is killed" appears at the end of each run. It happens after the last step and does not affect the results.
+
 ## How it fits together
 
 ```
@@ -58,7 +91,15 @@ Each run writes `$PSCRATCH/rsched/runs/<name>/`:
 
 You can tune the run with environment variables on `run.sh`: `MODEL`, `STEPS` (5), `BATCH` (8 prompts), `N` (4 rollouts per prompt), `MAX_TURNS` (6), `PROMPT_LEN`/`RESP_LEN` (4096), `TP`, `NGPUS`. Anything after the script name is passed to veRL as a Hydra override.
 
-Real SkyRL-SQL data needs about 50 GB. Run `FULL_SQL=1 bash launch/data.sh`, then `WORKLOAD=sql SQL_DATA=sql bash launch/run.sh`.
+Real SkyRL-SQL data needs about 50 GB. Run `FULL_SQL=1 bash launch/data.sh` on a login node. The unzip prints nothing and takes a while. Then run with `SQL_DATA=sql`, for example:
+
+```bash
+sbatch -A <account> --export=ALL,WORKLOAD=sql,SQL_DATA=sql,N=16,STEPS=20,NAME=sql-full_n16_cache-on launch/train.sbatch
+```
+
+`NAME` sets the run folder name. `train.sbatch` uses the debug queue, which has a 30 minute limit.
+
+To plot a batch of runs, put them in one folder under `results/` and run `python scripts/plot_results.py results/<folder>`.
 
 For a shared team install, set `RSCHED_ROOT` (and `RSCHED_DATA`) to a project CFS or common-software directory before running the scripts. Read `launch/env.sh` for the details. `$PSCRATCH` is purged after 8 weeks without access.
 
@@ -79,13 +120,3 @@ TVCACHE_BIN=$TVCACHE_BIN pytest -q tests/
 ```
 
 This starts a real TVCache server and drives the real `TVCacheToolAgentLoop` tool path with scripted LLM turns. It checks rewards, cache hits on a second wave, the timeline, and the cache-off baseline. The script also shows the effect the project studies: 4 concurrent siblings that share their first call all record **timing** misses.
-
-## Status, caveats and next steps
-
-- **Verified locally:** the TVCache build, the tvclient integration, both workloads, rewards, timeline logging and analysis, and every veRL Hydra override in `run.sh` (composed against the v0.9.1 config).
-- **Not yet verified, needs Perlmutter:** the full GRPO loop on GPUs (vLLM, FSDP and the real hermes tool-call parsing). The first `run.sh` on a debug node is the test. Paste errors from `train.log` into the team channel or into Claude.
-- The TVCache server's port is hard-coded to 7878 upstream, so only one run per node can use the cache.
-- The terminal sandbox is a plain directory and **not a security boundary**. Real Terminal-Bench tasks ship Docker images, so the next step is a `podman-hpc` `Sandbox` backend that uses container commit/checkpoint for `fork()`. Converted tasks can be loaded with `RSCHED_TERMINAL_TASKS=tasks.json` (same fields as `terminal_tasks.py`).
-- SQL uses native function calling (hermes), where SkyRL uses `<sql>` tags. The reward follows SkyRL: -1 when there is no `<solution>`, 0 for a wrong result set, 1 for a correct one. The `<think>` format check is not applied.
-- Queries are whitespace-normalized before keying, which is semantics-preserving.
-- The global step is not logged directly. Use `uid` (one per prompt per step) together with wall-clock time.
