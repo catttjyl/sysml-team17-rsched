@@ -99,7 +99,12 @@ def plot_position(runs, out):
         ax.set_xlabel("Tool call in rollout")
     axes[0].set_ylabel("Tool calls")
     axes[0].legend(loc="upper right")
-    fig.suptitle("All timing misses happen on the first call (H1)", x=0.01, ha="left", fontsize=12)
+    timing = pd.concat([runs[n].loc[runs[n]["class"] == "timing", "seq"] for n in names])
+    if len(timing) and (timing == 1).all():
+        title = "All timing misses happen on the first call (H1)"
+    else:
+        title = "Tool calls by position in the rollout (H1)"
+    fig.suptitle(title, x=0.01, ha="left", fontsize=12)
     fig.tight_layout()
     fig.savefig(out / "by_position.png", bbox_inches="tight")
     plt.close(fig)
@@ -119,9 +124,12 @@ def plot_latency(runs, out, timeout=5.0):
     for i, d in enumerate(data, start=1):
         jitter = (pd.Series(range(len(d))) % 7 - 3) * 0.04
         ax.scatter(d, i + jitter.values, s=10, color=COLORS["cold"], zorder=0)
-        ax.text(d.max() * 1.2, i, f"median {d.median():.2f} s", va="center", color=TEXT, fontsize=9)
+        ax.text(d.max() * 1.2, i, f"median {d.median():.2g} s", va="center", color=TEXT, fontsize=9)
     ax.set_xscale("log")
-    ticks = [0.05, 0.1, 0.2, 0.5]
+    lo = min(d.min() for d in data)
+    hi = max(d.max() for d in data)
+    ticks = [t for t in [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5]
+             if lo * 0.8 <= t <= hi * 1.5]
     ax.set_xticks(ticks, [f"{t:g}" for t in ticks])
     ax.minorticks_off()
     ax.set_yticks(range(1, len(names) + 1), [run_label(n) for n in names])
@@ -164,14 +172,16 @@ def plot_siblings(run_dir, df, out):
     keys = ["gen"] + [k for k in CLASSES if (calls["class"] == k).any()]
     handles = [plt.Rectangle((0, 0), 1, 1, color=COLORS[k]) for k in keys]
     names = ["Generation" if k == "gen" else LABELS[k] for k in keys]
-    ax.legend(handles, names, ncol=len(keys), loc="upper left", bbox_to_anchor=(0, -0.35))
+    height = 0.45 * len(rollouts) + 1.6
+    fig.set_size_inches(8, height)
+    fig.legend(handles, names, ncol=len(keys), loc="lower left", bbox_to_anchor=(0.02, 0))
     ax.set_yticks(range(len(rollouts)), [f"Rollout {i + 1}" for i in range(len(rollouts))])
     ax.invert_yaxis()
     ax.set_xlabel("Seconds since the prompt's rollouts started")
     task = calls["task"].iloc[0].split("|")[-1]
-    ax.set_title(f"Two siblings send the same call at once, and both miss (task: {task})",
+    ax.set_title(f"Siblings send the same call at once, and all of them miss (task: {task})",
                  loc="left", fontsize=12)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0.45 / height, 1, 1))
     fig.savefig(out / "sibling_timeline.png", bbox_inches="tight")
     plt.close(fig)
 

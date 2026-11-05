@@ -18,22 +18,21 @@ Done
 - Runs end to end on Perlmutter (1 node, 4x A100) for both workloads, with the cache on and off.
 - `install.sh` works on Perlmutter. It builds TVCache with gcc and patches a broken flash-attn URL in veRL's lock file.
 - `prepare_sql.py` loads the full SkyRL-SQL data (653 train, 1034 validation tasks).
-- First toy traces and plots are in `results/toy_n4/`. Its README has the numbers.
+- Toy runs: `results/toy_n4/`.
+- Full SkyRL-SQL runs, 16 rollouts per prompt, 20 steps, cache on and off: `results/sql_full_n16/`.
 
-First findings (toy data, small sample)
-- Timing misses are 1 to 5% of tool calls.
+First findings
+- Timing misses are 1 to 5% of tool calls. On full SQL they are about 1%.
 - All timing misses are on the first tool call. This fits H1.
-- Toy tool calls are fast (median about 0.1 s), so they cannot test H2.
-- Cold calls are slower with the cache on (median 0.16 s) than off (0.10 s). This looks like cache overhead.
-
-Running now
-- Full SkyRL-SQL, 16 rollouts per prompt, 20 steps, cache on and cache off.
+- SQL tool calls are very fast. A query takes about 2 ms, and all tool time is about 1.4% of generation time. Scheduling can save almost nothing on SQL. This fits H2.
+- The cache adds about 85 ms to each SQL call, so on SQL it makes tool calls slower.
+- Toy terminal calls are also fast (median about 0.1 s), so they cannot show a scheduling gain either.
 
 Next
+- Find where the 85 ms of cache overhead per call goes.
+- A podman-hpc sandbox for real Terminal-Bench tasks, where tool calls are slow. Converted tasks can already be loaded with `RSCHED_TERMINAL_TASKS=tasks.json` (same fields as `terminal_tasks.py`).
 - Trace analysis on the full SQL runs.
 - Simulator v0 that replays the traces.
-- Measure cache overhead on its own.
-- A podman-hpc sandbox for real Terminal-Bench tasks. Converted tasks can already be loaded with `RSCHED_TERMINAL_TASKS=tasks.json` (same fields as `terminal_tasks.py`).
 - Ask Bhaskar about cache overhead and about running Terminal-Bench sandboxes on Perlmutter.
 
 Known limits

@@ -24,6 +24,7 @@ misses concentrated in the first one or two calls?).
 from __future__ import annotations
 
 import argparse
+import sys
 import bisect
 import csv
 import json
@@ -106,7 +107,7 @@ def main() -> None:
             w = csv.DictWriter(fh, fieldnames=keys, extrasaction="ignore")
             w.writeheader()
             w.writerows(rows)
-        print(f"wrote {len(rows)} rows -> {args.csv}")
+        print(f"wrote {len(rows)} rows -> {args.csv}", file=sys.stderr)
 
 
 if __name__ == "__main__":
