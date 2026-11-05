@@ -36,7 +36,8 @@ TVCache server (Rust, :7878, same node)    nvidia-smi sampler → gpu.csv
 
 ```bash
 ssh -i ~/.ssh/nersc <user>@perlmutter.nersc.gov
-git clone <this repo> ~/reuse-sched && cd ~/reuse-sched
+git clone https://github.com/catttjyl/sysml-team17-rsched.git
+cd sysml-team17-rsched
 
 bash launch/install.sh        # login node, one time: uv, rust, veRL v0.9.1 env, TVCache build (~20 min)
 bash launch/data.sh           # login node: Qwen2.5-1.5B-Instruct, toy SQL DBs, terminal tasks
