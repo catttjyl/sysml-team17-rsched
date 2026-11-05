@@ -31,13 +31,18 @@ With cache off, "hit" means "would have hit": the same key had already finished.
 
 ## Notes
 
-- SQL calls are very fast (about 0.06 s each), so timing misses are rare.
-- Terminal calls are slower (about 0.5 s each) and have more timing misses.
+- Tool calls are fast in both toy workloads. The median call takes about 0.1 s for SQL and for terminal.
+- 3 terminal calls hit the 30 s timeout (task `top-error`). They make up most of the terminal tool time in the table.
 - All timing misses are on the first tool call. This fits H1.
-- Cold calls are slower with the cache on (0.63 s) than off (0.40 s). The extra time is likely cache overhead (lookup, sandbox copy, insert). Small sample, so this needs a proper check.
+- Cold calls are slower with the cache on (median 0.16 s) than off (0.10 s). This is likely cache overhead (lookup, sandbox copy, insert). Small sample, so this needs a proper check.
 - Toy SQL has only 12 tasks, so prompts repeat across steps. Many SQL hits come from earlier steps, not from siblings.
+- The toy calls are too fast to test H2. We need real Terminal-Bench tasks for that.
 - Mean reward is low on SQL (-0.89). The model often does not output `<solution>`.
 - "DataLoader worker is killed" shows up at the end of each run. It happens after step 5 and does not affect the results.
+
+## Figures
+
+Made with `python scripts/plot_results.py results/toy_n4`. They are in `figures/`.
 
 ## Files in each folder
 
