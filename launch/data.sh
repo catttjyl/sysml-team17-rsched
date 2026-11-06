@@ -48,4 +48,4 @@ if [ "${FULL_TBENCH:-0}" = 1 ]; then
       --difficulty "$difficulty" --image-tag "${TB1_COMMIT:0:7}" --out "$RSCHED_DATA/terminal_$difficulty"
   done
 fi
-ls -R "$RSCHED_DATA" | head -40
+ls -R "$RSCHED_DATA" | head -40 || true

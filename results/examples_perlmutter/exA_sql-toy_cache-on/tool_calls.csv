@@ -1,0 +1,4 @@
+t_start,t_end,workload,task,uid,rollout,seq,turn,key,depth,hit,source,executed,class,n_earlier
+1793934013.6674542,1793934013.6721852,sql,sql|toy|company|train-1,020e06c8-dff6-4ae2-9a59-f83b6ab6732b,dc8dd087718a,1,1,7123e2e999969f4c,1,False,fresh,1,cold,0
+1793934013.6893275,1793934013.6913655,sql,sql|toy|company|train-1,020e06c8-dff6-4ae2-9a59-f83b6ab6732b,ad5514c5d2fc,1,1,ae2198776ff742c7,1,False,fresh,1,cold,0
+1793934013.9039683,1793934013.905866,sql,sql|toy|company|train-1,020e06c8-dff6-4ae2-9a59-f83b6ab6732b,a17535c40e5f,1,1,2809864f1884fa2a,1,False,fresh,1,cold,0
