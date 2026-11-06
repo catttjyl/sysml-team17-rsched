@@ -1,0 +1,4 @@
+t_start,t_end,workload,task,uid,rollout,seq,turn,key,depth,hit,source,executed,class,n_earlier
+1793935967.8860667,1793935967.8882842,sql,sql|synsql|census_and_demographic_data_analysis_695069|train-340,314497d4-aac1-4bd1-960c-21b2bc92e4d9,93f31ba2be66,1,1,40e3ab3fd96d111f,1,False,direct,1,cold,0
+1793935967.9147592,1793935967.9162955,sql,sql|synsql|census_and_demographic_data_analysis_695069|train-340,314497d4-aac1-4bd1-960c-21b2bc92e4d9,d3b17b4217e8,1,1,9f3f88df62ac22a7,1,False,direct,1,cold,0
+1793935968.1505425,1793935968.151955,sql,sql|synsql|census_and_demographic_data_analysis_695069|train-340,314497d4-aac1-4bd1-960c-21b2bc92e4d9,7ca205881c9e,1,1,2018d34dbf2045ac,1,False,direct,1,cold,0

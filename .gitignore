@@ -6,3 +6,4 @@ rollouts/
 logs/*
 !logs/.gitkeep
 runs/
+.DS_Store

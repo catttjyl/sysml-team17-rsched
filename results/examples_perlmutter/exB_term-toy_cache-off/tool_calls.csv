@@ -1,0 +1,5 @@
+t_start,t_end,workload,task,uid,rollout,seq,turn,key,depth,hit,source,executed,class,n_earlier
+1793934523.7535384,1793934523.8082154,terminal,term|hello-script,79f09a92-2e8b-4829-858c-fd45d13ace10,206610c5e1b4,1,1,d2b95ea633814ae2,1,False,direct,1,cold,0
+1793934523.8482525,1793934523.8962119,terminal,term|hello-script,79f09a92-2e8b-4829-858c-fd45d13ace10,9620c1d46138,1,1,3836cef8ffeaaeeb,1,False,direct,1,cold,0
+1793934523.899106,1793934523.9481828,terminal,term|hello-script,79f09a92-2e8b-4829-858c-fd45d13ace10,1f7dcc692ca8,1,1,54dc5c07a26ac90b,1,False,direct,1,cold,0
+1793934524.0386455,1793934524.0843346,terminal,term|hello-script,79f09a92-2e8b-4829-858c-fd45d13ace10,6cb5f8971920,1,1,4254a6ffa7154ec5,1,False,direct,1,cold,0

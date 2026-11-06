@@ -1,0 +1,24 @@
+{
+  "rollouts": 4,
+  "gen_turns": 7,
+  "sql": {
+    "tool_calls": 3,
+    "classes": {
+      "cold": 3
+    },
+    "hit_rate": 0.0,
+    "timing_miss_rate": 0.0,
+    "upper_bound_hit_rate": 0.0,
+    "tool_seconds_total": 0.005166292190551758,
+    "tool_seconds_by_class": {
+      "cold": 0.005166292190551758
+    },
+    "by_call_position": {
+      "1": {
+        "cold": 3
+      }
+    }
+  },
+  "mean_reward": -0.25,
+  "gen_seconds_total": 15.736161470413208
+}

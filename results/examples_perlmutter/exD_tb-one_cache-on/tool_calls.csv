@@ -1,0 +1,4 @@
+t_start,t_end,workload,task,uid,rollout,seq,turn,key,depth,hit,source,executed,class,n_earlier
+1793936419.2928474,1793936421.0564256,terminal,term|hello-world,ad369a74-4759-419c-8f08-86f9388722db,0f3637ad2ec1,1,1,36bf007096f77250,1,False,fresh,1,cold,0
+1793936419.3503757,1793936421.2093067,terminal,term|hello-world,ad369a74-4759-419c-8f08-86f9388722db,cb2a2573f44d,1,1,73a6485cd8d2036e,1,False,fresh,1,cold,0
+1793936419.46483,1793936421.2397878,terminal,term|hello-world,ad369a74-4759-419c-8f08-86f9388722db,b5fefac254c3,1,1,0e97098275005a14,1,False,fresh,1,cold,0

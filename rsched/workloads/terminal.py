@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import tempfile
 import uuid
 from typing import Any, List, Optional
 
@@ -57,24 +58,33 @@ def _copy(src: str, dst: str) -> None:
 
 
 async def run_argv(argv: List[str], timeout: float, **kwargs: Any) -> tuple[int, str]:
-    """Run a command and return (exit code, full output). A timeout returns code -9."""
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        start_new_session=True,
-        **kwargs,
-    )
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
+    """Run a command and return (exit code, full output). A timeout returns code -9.
+
+    Output goes to a temporary file, not a pipe: `podman-hpc run -d` leaves a
+    detached helper process that inherits the pipe, so reading until EOF would
+    hang even though podman itself has exited. Waiting on the process and then
+    reading the file avoids that.
+    """
+    with tempfile.TemporaryFile() as fh:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=fh,
+            stderr=fh,
+            start_new_session=True,
+            **kwargs,
+        )
         try:
-            os.killpg(proc.pid, 9)
-        except ProcessLookupError:
-            pass
-        await proc.wait()
-        return -9, "Failed to execute: command timed out"
+            await asyncio.wait_for(proc.wait(), timeout)
+        except asyncio.TimeoutError:
+            try:
+                os.killpg(proc.pid, 9)
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            return -9, "Failed to execute: command timed out"
+        fh.seek(0)
+        out = fh.read()
     return proc.returncode, out.decode("utf-8", errors="replace")
 
 
