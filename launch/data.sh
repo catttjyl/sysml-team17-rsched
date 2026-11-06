@@ -24,7 +24,7 @@ fi
 if [ "${FULL_SQL:-0}" = 1 ]; then
   hf download NovaSky-AI/SkyRL-SQL-653-data-newfmt --repo-type dataset --local-dir "$RSCHED_DATA/skyrl_sql"
   if [ ! -d "$RSCHED_DATA/sql_db/SynSQL-2.5M" ]; then
-    mkdir -p "$RSCHED_DATA/sql_db"  # the toy step no longer creates it on this path
+    mkdir -p "$RSCHED_DATA/sql_db"
     hf download seeklhy/OmniSQL-datasets data.zip --repo-type dataset --local-dir "$RSCHED_DATA/omnisql_zip"
     # unzip into a tmp dir, then move the three DB trees next to toy/
     unzip -q "$RSCHED_DATA/omnisql_zip/data.zip" -d "$RSCHED_DATA/omnisql_unzip"

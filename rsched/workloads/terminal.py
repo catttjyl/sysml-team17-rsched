@@ -12,7 +12,7 @@ Sandbox backend for bring-up: a plain directory per sandbox.
 This is NOT a security boundary (commands can touch the rest of the
 filesystem). Set ``RSCHED_SANDBOX_ISOLATION=bwrap`` to run commands under
 bubblewrap with the sandbox bound at /workspace, if bwrap is available.
-Real Terminal-Bench tasks need container images -> podman-hpc backend (TODO).
+Terminal-Bench 1 tasks run in containers instead: see terminal_podman.py.
 """
 
 from __future__ import annotations
@@ -56,6 +56,39 @@ def _copy(src: str, dst: str) -> None:
     shutil.copytree(src, dst, symlinks=True)
 
 
+async def run_argv(argv: List[str], timeout: float, **kwargs: Any) -> tuple[int, str]:
+    """Run a command and return (exit code, full output). A timeout returns code -9."""
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
+        **kwargs,
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        try:
+            os.killpg(proc.pid, 9)
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        return -9, "Failed to execute: command timed out"
+    return proc.returncode, out.decode("utf-8", errors="replace")
+
+
+def truncate_output(text: str) -> str:
+    if len(text) > MAX_OUTPUT_CHARS:
+        half = MAX_OUTPUT_CHARS // 2
+        return text[:half] + "\n...(output truncated)...\n" + text[-half:]
+    return text
+
+
+def format_result(code: int, out: str) -> str:
+    return f"{out}\n[exit code: {code}]" if out else f"[exit code: {code}]"
+
+
 async def run_bash(cwd: str, command: str, timeout: float = CMD_TIMEOUT_S) -> tuple[int, str]:
     env = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -74,29 +107,8 @@ async def run_bash(cwd: str, command: str, timeout: float = CMD_TIMEOUT_S) -> tu
     else:
         argv = ["bash", "-c", command]
         cwd_arg = cwd
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
-        cwd=cwd_arg,
-        env=env,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        start_new_session=True,
-    )
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        try:
-            os.killpg(proc.pid, 9)
-        except ProcessLookupError:
-            pass
-        await proc.wait()
-        return -9, "Failed to execute: command timed out"
-    text = out.decode("utf-8", errors="replace")
-    if len(text) > MAX_OUTPUT_CHARS:
-        half = MAX_OUTPUT_CHARS // 2
-        text = text[:half] + "\n...(output truncated)...\n" + text[-half:]
-    return proc.returncode, text
+    code, text = await run_argv(argv, timeout, cwd=cwd_arg, env=env)
+    return code, truncate_output(text)
 
 
 class BashToolCall(ToolCall):
@@ -117,7 +129,7 @@ class LocalDirSandbox(Sandbox):
             task = get_task(self.task_name)
             if task.image:
                 # Its default test is `true`, so a folder sandbox would score every rollout as a pass.
-                raise RuntimeError(f"{task.task_id} needs a container sandbox, which is not available yet")
+                raise RuntimeError(f"{task.task_id} needs RSCHED_SANDBOX_BACKEND=podman")
             os.makedirs(live)
             for rel, content in task.files.items():
                 p = os.path.join(live, rel)
@@ -147,7 +159,7 @@ class LocalDirSandbox(Sandbox):
         code, out = await run_bash(self.env_id, tool_call.command)
         if code == -9:
             return out
-        return f"{out}\n[exit code: {code}]" if out else f"[exit code: {code}]"
+        return format_result(code, out)
 
     async def stop(self) -> None:
         if self.env_id and self.env_id.startswith(SANDBOX_ROOT):
@@ -159,6 +171,13 @@ class TerminalWorkload(Workload):
     tool_names = ("bash",)
     sandbox_cls = LocalDirSandbox
     tool_call_cls = BashToolCall
+
+    def __init__(self, **config: Any):
+        super().__init__(**config)
+        if os.environ.get("RSCHED_SANDBOX_BACKEND") == "podman":
+            from rsched.workloads.terminal_podman import PodmanSandbox
+
+            self.sandbox_cls = PodmanSandbox
 
     def task_id(self, row_kwargs: dict) -> str:
         info = row_kwargs.get("extra_info") or {}

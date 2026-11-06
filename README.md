@@ -14,6 +14,7 @@ Pinned versions: **veRL v0.9.1** (its own `uv.lock`: torch 2.11+cu130, vLLM 0.24
 ## Progress
 
 Done
+
 - Tested locally: TVCache build, tvclient, both workloads, rewards, logging and analysis, and the veRL settings in `run.sh`.
 - Runs end to end on Perlmutter (1 node, 4x A100) for both workloads, with the cache on and off.
 - `install.sh` works on Perlmutter. It builds TVCache with gcc and patches a broken flash-attn URL in veRL's lock file.
@@ -23,6 +24,7 @@ Done
 - Full SkyRL-SQL runs, 16 rollouts per prompt, 20 steps, cache on (before and after the fix) and off: `results/sql_full_n16/`.
 
 First findings
+
 - Timing misses are rare: 1 to 5% of tool calls, and under 1% on full SQL after the fix.
 - All timing misses are on the first tool call. This fits H1.
 - Faster tool calls mean fewer timing misses. After the fix, timing misses on SQL dropped from 7 to 1.
@@ -31,14 +33,18 @@ First findings
 - Toy terminal calls are also fast (median about 0.1 s), so they cannot show a scheduling gain either.
 
 Next
-- A podman-hpc sandbox for real Terminal-Bench tasks, where tool calls are slow. Converted tasks can already be loaded with `RSCHED_TERMINAL_TASKS=tasks.json` (same fields as `terminal_tasks.py`).
+
+- Build the Terminal-Bench 1 images and run the first container runs. See "Running the real Terminal-Bench tasks" below.
 - Trace analysis on the full SQL runs.
 - Simulator v0 that replays the traces.
 - Report the TCP_NODELAY fix upstream, and find out how to run Terminal-Bench sandboxes on Perlmutter.
 
 Known limits
+
 - The TVCache port is fixed at 7878, so only one cache run fits on a node.
-- The terminal sandbox is a plain folder, not an isolated container.
+- The built-in terminal tasks run in a plain folder, not an isolated container.
+- Container forks keep files, the working directory and exported variables, but not running processes.
+- Multi-service Terminal-Bench tasks are skipped, and settings like `tmpfs` or `extra_hosts` in a task's compose file are not applied. The converter lists the affected tasks.
 - SQL uses native function calling, while SkyRL uses `<sql>` tags. The reward follows SkyRL: -1 with no `<solution>`, 0 for a wrong result, 1 for a correct one. The `<think>` format check is not applied.
 - SQL queries are whitespace-normalized before they become cache keys. This does not change their meaning.
 - The global step is not logged. Use `uid` (one per prompt per step) with wall-clock time.
@@ -67,15 +73,17 @@ TVCache server (Rust, :7878, same node)    nvidia-smi sampler → gpu.csv
 
 ## Perlmutter quick start
 
+This sets up the environment and runs the toy data, which needs no large downloads.
+
 ```bash
 ssh -i ~/.ssh/nersc <user>@perlmutter.nersc.gov
 git clone https://github.com/catttjyl/sysml-team17-rsched.git
 cd sysml-team17-rsched
 
 bash launch/install.sh        # login node, one time: uv, rust, veRL v0.9.1 env, TVCache build (~20 min)
-bash launch/data.sh           # login node: Qwen2.5-1.5B-Instruct, toy SQL DBs, terminal tasks
+bash launch/data.sh           # login node: Qwen2.5-1.5B-Instruct, toy SQL DBs, built-in terminal tasks
 
-# interactive bring-up (debug QOS, 4×A100)
+# interactive bring-up (4×A100)
 salloc -N 1 -C gpu -q interactive -t 01:00:00 --gpus-per-node=4 -A <account>
 WORKLOAD=sql      bash launch/run.sh
 WORKLOAD=terminal bash launch/run.sh
@@ -87,21 +95,105 @@ sbatch -A <account> --export=ALL,WORKLOAD=terminal launch/train.sbatch
 ```
 
 Each run writes `$PSCRATCH/rsched/runs/<name>/`:
-`timeline/*.jsonl`, `tool_calls.csv` (every call with its miss class), `report.json`, `gpu.csv`, `tvcache.log`, `tvcache_dump.json` (the Tool Call Graphs), and `train.log`.
 
-You can tune the run with environment variables on `run.sh`: `MODEL`, `STEPS` (5), `BATCH` (8 prompts), `N` (4 rollouts per prompt), `MAX_TURNS` (6), `PROMPT_LEN`/`RESP_LEN` (4096), `TP`, `NGPUS`. Anything after the script name is passed to veRL as a Hydra override.
+- `timeline/*.jsonl`: the raw events
+- `tool_calls.csv`: every call with its miss class
+- `report.json`: summary numbers
+- `gpu.csv`: GPU use over time
+- `tvcache.log`, `tvcache_dump.json`: the cache server log and the Tool Call Graphs (cache-on only)
+- `train.log`: the full training log
 
-Real SkyRL-SQL data needs about 50 GB. Run `FULL_SQL=1 bash launch/data.sh` on a login node. The unzip prints nothing and takes a while. Then run with `SQL_DATA=sql`, for example:
+You can tune the run with environment variables on `run.sh`: `MODEL`, `STEPS` (5), `BATCH` (8 prompts), `N` (4 rollouts per prompt), `MAX_TURNS` (6), `PROMPT_LEN`/`RESP_LEN` (4096), `TP`, `NGPUS`. `NAME` sets the run folder name. Anything after the script name is passed to veRL as a Hydra override.
+
+`train.sbatch` uses the debug queue, which has a 30 minute limit. For longer runs, add for example `-q regular -t 04:00:00` to `sbatch`.
+
+## Running the real SkyRL-SQL data
+
+SkyRL-SQL is a text-to-SQL dataset with 653 train and 1034 validation tasks. The agent answers questions by querying read-only SQLite databases, which come from OmniSQL. Each call is a fast read with no state to fork.
+
+Fetch the data on a login node. It needs about 50 GB, and the unzip prints nothing and takes a while.
+
+```bash
+FULL_SQL=1 bash launch/data.sh
+```
+
+Run with `SQL_DATA=sql`, once for each setup you want to compare:
 
 ```bash
 sbatch -A <account> --export=ALL,WORKLOAD=sql,SQL_DATA=sql,N=16,STEPS=20,NAME=sql-full_n16_cache-on launch/train.sbatch
+sbatch -A <account> --export=ALL,WORKLOAD=sql,SQL_DATA=sql,N=16,STEPS=20,CACHE=off,NAME=sql-full_n16_cache-off launch/train.sbatch
 ```
 
-`NAME` sets the run folder name. `train.sbatch` uses the debug queue, which has a 30 minute limit.
+To plot a batch of runs, copy them into one folder under `results/`, named `<workload>_cache-on` or `<workload>_cache-off`. The figures go to `results/<folder>/figures/`.
 
-To plot a batch of runs, put them in one folder under `results/` and run `python scripts/plot_results.py results/<folder>`.
+```bash
+mkdir -p results/sql_full_n16
+cp -r $PSCRATCH/rsched/runs/sql-full_n16_cache-on  results/sql_full_n16/sql_cache-on
+cp -r $PSCRATCH/rsched/runs/sql-full_n16_cache-off results/sql_full_n16/sql_cache-off
+python scripts/plot_results.py results/sql_full_n16
+```
 
-For a shared team install, set `RSCHED_ROOT` (and `RSCHED_DATA`) to a project CFS or common-software directory before running the scripts. Read `launch/env.sh` for the details. `$PSCRATCH` is purged after 8 weeks without access.
+## Running the real Terminal-Bench tasks
+
+Terminal-Bench 1 has 241 shell tasks, each with its own Docker image and tests. Each task's `task.yaml` labels it easy (64), medium (120) or hard (57). We use the easy and medium tasks at a fixed commit, with one dataset for each. Tasks with several services are skipped for now, which leaves 59 easy and 113 medium. These counts differ from the TVCache paper's (51 and 95), which gives no task list.
+
+Rewards on these tasks are training signals only. Do not present a trained model's score as a Terminal-Bench result, or publish trained checkpoints as a Terminal-Bench model.
+
+### 1. Set up containers (one time)
+
+On Perlmutter, image names with no registry resolve to `registry.suse.com`, so make Docker Hub the default:
+
+```bash
+mkdir -p ~/.config/containers
+echo 'unqualified-search-registries = ["docker.io"]' > ~/.config/containers/registries.conf
+```
+
+### 2. Prepare the tasks (one time per group)
+
+These commands use the easy group. For the medium group, replace `easy` with `medium`.
+
+```bash
+source launch/env.sh               # needed in each new shell, to set $RSCHED_DATA
+
+# login node: fetch and convert the tasks
+FULL_TBENCH=1 bash launch/data.sh
+
+# login node, in tmux: build each task's image and save it as a tar. Safe to re-run.
+python scripts/tbench_images.py build --tasks $RSCHED_DATA/terminal_easy/tasks.json
+```
+
+Errors are saved in `$RSCHED_DATA/terminal_bench1/images/build_status.json`. `accelerate-maximal-square` is expected to fail, because its base image has a file owner that rootless podman can't map.
+
+Next, keep only the tasks that work on Perlmutter. A task passes if its tests fail in an untouched container and pass after its reference solution.
+
+```bash
+# compute node. Safe to re-run.
+source launch/env.sh
+python scripts/tbench_images.py load --tasks $RSCHED_DATA/terminal_easy/tasks.json --allow-missing
+python scripts/check_tbench_oracle.py --tasks $RSCHED_DATA/terminal_easy/tasks.json
+python -m rsched.data.prepare_terminal_bench --tasks-dir $RSCHED_DATA/terminal_bench1/src/original-tasks \
+  --difficulty easy --out $RSCHED_DATA/terminal_easy --only $RSCHED_DATA/terminal_easy/oracle_status.json
+python scripts/tbench_images.py clean
+```
+
+### 3. Run
+
+`run.sh` loads the images, and removes containers and snapshots at the end. Results and tuning options are the same as in the quick start, and `RSCHED_CMD_TIMEOUT` sets the limit per command (600 s).
+
+```bash
+# interactive
+WORKLOAD=terminal TERMINAL_DATA=terminal_easy BATCH=4 N=4 bash launch/run.sh
+
+# batch
+sbatch -A <account> --export=ALL,WORKLOAD=terminal,TERMINAL_DATA=terminal_easy,BATCH=4,N=4 launch/train.sbatch
+```
+
+Add `CACHE=off` for the baseline. Plot the results the same way as for SQL, with folders named `terminal_cache-on` and `terminal_cache-off`.
+
+### Notes
+
+- Use tars, not `podman-hpc migrate`. On Perlmutter, `commit` fails for containers started from migrated images.
+- Loaded images and snapshots live in `/tmp`, which is memory-backed on compute nodes and cleared between jobs. Snapshots are not evicted during a run, so long runs can use a lot of memory.
 
 ## Miss classes (draft definition from the proposal)
 

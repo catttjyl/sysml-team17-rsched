@@ -5,6 +5,7 @@
 #   WORKLOAD=sql      CACHE=tvcache bash launch/run.sh
 #   WORKLOAD=terminal CACHE=off     bash launch/run.sh
 #   WORKLOAD=sql SQL_DATA=sql STEPS=50 bash launch/run.sh     # real SkyRL-SQL data
+#   WORKLOAD=terminal TERMINAL_DATA=terminal_easy bash launch/run.sh  # Terminal-Bench 1 containers
 #   bash launch/run.sh trainer.total_training_steps=2         # extra hydra overrides pass through
 #
 # Outputs in $RSCHED_RUNS/<name>/: timeline/*.jsonl (per-call trace), gpu.csv
@@ -37,7 +38,11 @@ case "$WORKLOAD" in
     TOOLS="$RSCHED_HOME/configs/sql_tools.yaml" ;;
   terminal)
     DATA_DIR="$RSCHED_DATA/$TERMINAL_DATA"
-    if [ -f "$DATA_DIR/tasks.json" ]; then export RSCHED_TERMINAL_TASKS="$DATA_DIR/tasks.json"; fi
+    if [ -f "$DATA_DIR/tasks.json" ]; then  # Terminal-Bench 1: run in containers
+      export RSCHED_TERMINAL_TASKS="$DATA_DIR/tasks.json"
+      export RSCHED_SANDBOX_BACKEND=podman
+      export RSCHED_CMD_TIMEOUT="${RSCHED_CMD_TIMEOUT:-600}"
+    fi
     TOOLS="$RSCHED_HOME/configs/terminal_tools.yaml" ;;
   *) echo "unknown WORKLOAD=$WORKLOAD"; exit 1 ;;
 esac
@@ -59,10 +64,18 @@ cleanup() {
   fi
   for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
   rm -rf "$RSCHED_SANDBOX_ROOT"
+  if [ "${RSCHED_SANDBOX_BACKEND:-}" = podman ]; then
+    python "$RSCHED_HOME/scripts/tbench_images.py" clean || true
+  fi
   python -m rsched.analysis.timeline_report "$RSCHED_TIMELINE_DIR" --csv "$RUN_DIR/tool_calls.csv" \
     > "$RUN_DIR/report.json" 2>/dev/null && cat "$RUN_DIR/report.json" || true
 }
 trap cleanup EXIT
+
+# --- Terminal-Bench 1 images (node-local, so every job loads them) ------------
+if [ "${RSCHED_SANDBOX_BACKEND:-}" = podman ]; then
+  python "$RSCHED_HOME/scripts/tbench_images.py" load --tasks "$RSCHED_TERMINAL_TASKS"
+fi
 
 # --- TVCache server (same node; single port, so one run per node) ------------
 if [ "$CACHE" = tvcache ]; then

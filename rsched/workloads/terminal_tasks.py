@@ -30,6 +30,8 @@ class TerminalTask:
     build_context: str = "."
     dockerfile: str = "Dockerfile"
     difficulty: str = ""
+    test_timeout: float = 180.0
+    agent_timeout: float = 900.0
 
 
 _LOG = "\n".join(

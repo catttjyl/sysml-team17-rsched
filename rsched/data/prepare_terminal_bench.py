@@ -47,6 +47,8 @@ def load_task(task_dir: str, image_tag: str) -> tuple[dict | None, str | None, l
         "build_context": context,
         "dockerfile": dockerfile,
         "difficulty": meta["difficulty"],
+        "test_timeout": meta.get("max_test_timeout_sec", 180.0),
+        "agent_timeout": meta.get("max_agent_timeout_sec", 900.0),
     }
     return task, None, sorted(set(service) - STANDARD_COMPOSE_KEYS)
 
@@ -79,9 +81,17 @@ def main() -> None:
     ap.add_argument("--image-tag", default="d28711d", help="tag of the images built from these tasks")
     ap.add_argument("--val-tasks", type=int, default=2, help="last N tasks go to validation")
     ap.add_argument("--prompt-len", type=int, default=4096, help="PROMPT_LEN in launch/run.sh, in tokens")
+    ap.add_argument("--only", help="oracle_status.json: keep only tasks marked ok")
     args = ap.parse_args()
 
     tasks, skipped, extras = collect(args.tasks_dir, args.difficulty, args.image_tag)
+    if args.only:
+        with open(args.only) as fh:
+            status = json.load(fh)
+        for task in [t for t in tasks if status.get(t["task_id"], {}).get("status") != "ok"]:
+            reason = status.get(task["task_id"], {}).get("status", "not_checked")
+            skipped.setdefault(reason, []).append(task["task_id"])
+            tasks.remove(task)
     if len(tasks) <= args.val_tasks:
         raise SystemExit(f"only {len(tasks)} {args.difficulty} tasks under {args.tasks_dir}")
     os.makedirs(args.out, exist_ok=True)
