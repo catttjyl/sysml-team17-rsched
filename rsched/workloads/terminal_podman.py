@@ -36,6 +36,10 @@ SNAPSHOT_REPO = "localhost/rsched-snap"
 TEST_DIR = "/tests"  # CONTAINER_TEST_DIR in the Terminal-Bench 1 harness
 STATE_FILE = "/var/tmp/.rsched_shell_state"
 PODMAN_TIMEOUT_S = 300.0
+# Concurrent `run` calls can fail with "pasta failed ... netlink: Unexpected
+# sequence number", so starts on a node go one at a time, across all workers.
+# Always under /tmp: a shared lock can't depend on each process's TMPDIR.
+START_LOCK = f"/tmp/rsched-podman-start-{os.getuid()}.lock"
 # Extra time for podman itself, on top of the timeout enforced inside the container.
 EXEC_GRACE_S = 30.0
 TIMED_OUT = "Failed to execute: command timed out"
@@ -71,8 +75,8 @@ def pytest_passed(output: str) -> bool:
     return True
 
 
-async def podman(*args: str, timeout: float = PODMAN_TIMEOUT_S) -> str:
-    code, out = await run_argv([PODMAN, *args], timeout)
+async def podman(*args: str, timeout: float = PODMAN_TIMEOUT_S, prefix: tuple[str, ...] = ()) -> str:
+    code, out = await run_argv([*prefix, PODMAN, *args], timeout)
     if code != 0:
         raise RuntimeError(f"{PODMAN} {args[0]} failed (exit {code}): {out[-1000:]}")
     return out
@@ -86,6 +90,9 @@ class PodmanSandbox(Sandbox):
             "run", "-d", "--name", name, "--entrypoint=", "--pull=never", "--stop-timeout=0",
             "--env", f"TEST_DIR={TEST_DIR}", "--env", "TERM=dumb",
             image, "sleep", "infinity",
+            # -o: don't pass the lock to podman's detached helpers, which would
+            # keep it held for the container's whole life.
+            prefix=("flock", "-o", START_LOCK),
         )  # fmt: skip
         self.env_id = name
 
@@ -121,11 +128,12 @@ class PodmanSandbox(Sandbox):
         else:
             await podman("rm", "-f", self.env_id)
 
-    async def _exec(self, timeout: float, *argv: str) -> tuple[int, str]:
+    async def _exec(self, timeout: float, *argv: str, user: Optional[str] = None) -> tuple[int, str]:
         # `timeout` runs inside the container, because killing podman exec on
         # the host would leave the command running.
+        user_args = ["--user", user] if user else []
         code, out = await run_argv(
-            [PODMAN, "exec", self.env_id, "timeout", "-k", "5", str(timeout), *argv],
+            [PODMAN, "exec", *user_args, self.env_id, "timeout", "-k", "5", str(timeout), *argv],
             timeout + EXEC_GRACE_S,
         )
         if code == 125:
@@ -133,15 +141,14 @@ class PodmanSandbox(Sandbox):
         return code, out
 
     async def _run_tests(self) -> str:
-        # Same layout as the harness: tests/ contents and run-tests.sh under /tests.
         task = get_task(self.task_name)
-        await podman("exec", self.env_id, "mkdir", "-p", TEST_DIR)
+        await podman("exec", "--user", "root", self.env_id, "mkdir", "-p", TEST_DIR)
         tests = os.path.join(task.task_dir, "tests")
         if os.path.isdir(tests):
             await self.copy_in(tests + "/.", TEST_DIR + "/")
         await self.copy_in(os.path.join(task.task_dir, "run-tests.sh"), f"{TEST_DIR}/run-tests.sh")
         # Not in the shared shell state: the harness also runs tests in a new shell.
-        code, out = await self._exec(task.test_timeout, "bash", f"{TEST_DIR}/run-tests.sh")
+        code, out = await self._exec(task.test_timeout, "bash", f"{TEST_DIR}/run-tests.sh", user="root")
         if code in (-9, 124, 137):
             return TIMED_OUT
         return "PASS" if pytest_passed(out) else f"FAIL (exit {code})\n{out[-2000:]}"

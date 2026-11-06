@@ -21,8 +21,8 @@ import time
 os.environ.setdefault("RSCHED_SANDBOX_BACKEND", "podman")
 
 
-async def run_solution(sandbox, task) -> str | None:
-    """Run the reference solution. Returns an error message, or None."""
+async def run_solution(sandbox, task) -> tuple[str | None, int, str]:
+    """Run the reference solution. Returns (error message or None, last exit code, output)."""
     import yaml
 
     script = os.path.join(task.task_dir, "solution.sh")
@@ -33,11 +33,13 @@ async def run_solution(sandbox, task) -> str | None:
     else:
         with open(os.path.join(task.task_dir, "solution.yaml")) as fh:
             commands = [step["command"] for step in yaml.safe_load(fh)]
+    code, outputs = 0, []
     for command in commands:
         code, out = await sandbox.run_command(command, timeout=task.agent_timeout)
+        outputs.append(out)
         if code == -9:
-            return f"timed out: {command[:200]}"
-    return None
+            return f"timed out: {command[:200]}", code, "\n".join(outputs)
+    return None, code, "\n".join(outputs)
 
 
 async def check_task(task, sandbox_cls) -> dict:
@@ -54,7 +56,7 @@ async def check_task(task, sandbox_cls) -> dict:
     solved = sandbox_cls(task_name=name)
     try:
         await solved.start()
-        error = await run_solution(solved, task)
+        error, solution_exit, solution_output = await run_solution(solved, task)
         after = await solved.execute(TestToolCall("")) if error is None else error
     finally:
         await solved.stop()
@@ -64,7 +66,12 @@ async def check_task(task, sandbox_cls) -> dict:
         status = "ok"
     else:
         status = "solution_failed"
-    return {"status": status, "seconds": time.time() - t0, "detail": "" if status == "ok" else after[-1500:]}
+    result = {"status": status, "seconds": time.time() - t0, "detail": "" if status == "ok" else after[-1500:]}
+    if status != "ok":
+        # The tests only show what's missing; this shows why the solution didn't produce it.
+        result["solution_exit"] = solution_exit
+        result["solution_output"] = solution_output[-3000:]
+    return result
 
 
 async def main_async(args: argparse.Namespace) -> None:
