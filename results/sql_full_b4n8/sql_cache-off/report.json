@@ -1,0 +1,45 @@
+{
+  "rollouts": 640,
+  "gen_turns": 864,
+  "sql": {
+    "tool_calls": 224,
+    "classes": {
+      "cold": 213,
+      "would_hit": 10,
+      "timing": 1
+    },
+    "hit_rate": 0.044642857142857144,
+    "timing_miss_rate": 0.004464285714285714,
+    "upper_bound_hit_rate": 0.049107142857142856,
+    "tool_seconds_total": 0.4171111583709717,
+    "tool_seconds_by_class": {
+      "cold": 0.3942899703979492,
+      "would_hit": 0.016911983489990234,
+      "timing": 0.0059092044830322266
+    },
+    "by_call_position": {
+      "1": {
+        "cold": 174,
+        "timing": 1,
+        "would_hit": 3
+      },
+      "2": {
+        "cold": 15,
+        "would_hit": 4
+      },
+      "3": {
+        "would_hit": 2,
+        "cold": 11
+      },
+      "4": {
+        "cold": 6,
+        "would_hit": 1
+      },
+      "5": {
+        "cold": 7
+      }
+    }
+  },
+  "mean_reward": -0.15,
+  "gen_seconds_total": 759.8460464477539
+}

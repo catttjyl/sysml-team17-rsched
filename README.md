@@ -22,6 +22,8 @@ Done
 - Found and fixed a TVCache bug that added about 85 ms to every call (TCP_NODELAY not set). `install.sh` applies the fix. Details in `results/sql_full_n16/README.md`.
 - Toy runs: `results/toy_n4/`.
 - Full SkyRL-SQL runs, 16 rollouts per prompt, 20 steps, cache on (before and after the fix) and off: `results/sql_full_n16/`.
+- Full SkyRL-SQL runs with the same setup as Terminal-Bench (4 prompts, 8 rollouts, 20 steps), cache on and off: `results/sql_full_b4n8/`. Use these to compare the two workloads.
+- Terminal-Bench 1 runs in podman-hpc containers on Perlmutter. See "Running the real Terminal-Bench tasks" below.
 
 First findings
 
@@ -37,7 +39,7 @@ Next
 - Build the Terminal-Bench 1 images and run the first container runs. See "Running the real Terminal-Bench tasks" below.
 - Trace analysis on the full SQL runs.
 - Simulator v0 that replays the traces.
-- Report the TCP_NODELAY fix upstream, and find out how to run Terminal-Bench sandboxes on Perlmutter.
+- Report the TCP_NODELAY fix upstream.
 
 Known limits
 
