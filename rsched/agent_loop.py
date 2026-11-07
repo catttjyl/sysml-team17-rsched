@@ -47,6 +47,11 @@ def _plain(x: Any) -> Any:
     return x
 
 
+def _live_sandbox(executor: Any) -> Any:
+    """The sandbox a rollout is using: TvcacheToolExecutor and DirectExecutor name it differently."""
+    return getattr(executor, "rollout_sandbox", None) or getattr(executor, "sandbox", None)
+
+
 class TVCacheToolAgentLoop(ToolAgentLoop):
     def __init__(
         self,
@@ -196,8 +201,12 @@ class TVCacheToolAgentLoop(ToolAgentLoop):
         depth = len(cache_path(self._history))
         n_exec0 = ex.total_executions
         sb0 = getattr(ex, "rollout_sandbox", None)
+        live0 = _live_sandbox(ex)
         t0 = time.time()
-        self.timeline.log("tool_issue", turn=self._turn, seq=len(self._history), key=key, **self._ctx)
+        # Logged before running, so a call that never returns can still be identified.
+        self.timeline.log(
+            "tool_issue", turn=self._turn, seq=len(self._history), key=key, call=call.serialize()[:2000], **self._ctx
+        )
         error = None
         try:
             text = await ex.lookup_or_execute(self._history)
@@ -209,6 +218,9 @@ class TVCacheToolAgentLoop(ToolAgentLoop):
         executed = ex.total_executions - n_exec0
         hit = error is None and executed == 0
         sb1 = getattr(ex, "rollout_sandbox", None)
+        live1 = _live_sandbox(ex)
+        # Time spent starting a sandbox during this call, which is part of t_end - t_start.
+        sandbox_start_s = getattr(live1, "start_seconds", None) if live1 is not live0 else None
         if hit:
             source = "hit"
         elif error is not None:
@@ -237,6 +249,7 @@ class TVCacheToolAgentLoop(ToolAgentLoop):
             uncacheable=text.startswith("Failed to execute") if text else False,
             error=error,
             out_chars=len(text or ""),
+            sandbox_start_s=sandbox_start_s,
             **self._ctx,
         )
         return ToolResponse(text=self._truncate(text)), 0.0, {}

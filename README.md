@@ -107,6 +107,8 @@ Each run writes `$PSCRATCH/rsched/runs/<name>/`:
 
 You can tune the run with environment variables on `run.sh`: `MODEL`, `STEPS` (5), `BATCH` (8 prompts), `N` (4 rollouts per prompt), `MAX_TURNS` (6), `PROMPT_LEN`/`RESP_LEN` (4096), `TP`, `NGPUS`. `NAME` sets the run folder name. Anything after the script name is passed to veRL as a Hydra override.
 
+For a full run, use `BATCH=4 N=8 STEPS=20` (640 rollouts). The batch size and rollouts per prompt match the TVCache paper's setting.
+
 `train.sbatch` uses the debug queue, which has a 30 minute limit. For longer runs, add for example `-q regular -t 04:00:00` to `sbatch`.
 
 ## Running the real SkyRL-SQL data
@@ -194,7 +196,6 @@ Add `CACHE=off` for the baseline. Plot the results the same way as for SQL, with
 
 ### Notes
 
-- Use tars, not `podman-hpc migrate`. On Perlmutter, `commit` fails for containers started from migrated images.
 - Loaded images and snapshots live in `/tmp`, which is memory-backed on compute nodes and cleared between jobs. Snapshots are not evicted during a run, so long runs can use a lot of memory.
 
 ## Miss classes (draft definition from the proposal)

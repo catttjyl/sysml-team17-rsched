@@ -14,8 +14,10 @@ processes, because `commit` only saves the filesystem.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+import time
 import uuid
 from typing import Optional
 
@@ -40,6 +42,8 @@ PODMAN_TIMEOUT_S = 300.0
 # sequence number", so starts on a node go one at a time, across all workers.
 # Always under /tmp: a shared lock can't depend on each process's TMPDIR.
 START_LOCK = f"/tmp/rsched-podman-start-{os.getuid()}.lock"
+START_ATTEMPTS = 3
+MAX_EXEC_OUTPUT_BYTES = 10_000_000  # far above what's kept: see MAX_OUTPUT_CHARS in terminal.py
 # Extra time for podman itself, on top of the timeout enforced inside the container.
 EXEC_GRACE_S = 30.0
 TIMED_OUT = "Failed to execute: command timed out"
@@ -47,9 +51,16 @@ TIMED_OUT = "Failed to execute: command timed out"
 # Each call is a new bash process, so restore the previous call's working
 # directory and exports, and save them again on exit. The file is inside the
 # container, so `commit` carries it into forks.
+#
+# Output goes through `head -c`, so a command that prints forever (like `yes`)
+# gets SIGPIPE at the cap. Otherwise it fills run_argv's temp file, which is in
+# memory-backed /tmp, at about 0.8 GB/s. On exit, give head a moment to pass on
+# the last output, without waiting for background jobs that still hold the pipe.
 SHELL_WRAPPER = f"""
 if [ -f {STATE_FILE} ]; then . {STATE_FILE} >/dev/null 2>&1; fi
-trap '_rsched_rc=$?; {{ export -p; printf "cd %q\\n" "$PWD"; }} > {STATE_FILE} 2>/dev/null; exit $_rsched_rc' EXIT
+exec > >(head -c {MAX_EXEC_OUTPUT_BYTES}) 2>&1
+_rsched_head=$!
+trap '_rsched_rc=$?; {{ export -p; printf "cd %q\\n" "$PWD"; }} > {STATE_FILE} 2>/dev/null; exec >&- 2>&-; for _rsched_i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do kill -0 "$_rsched_head" 2>/dev/null || break; sleep 0.01; done; exit $_rsched_rc' EXIT
 _rsched_cmd=$1
 shift
 eval "$_rsched_cmd"
@@ -85,15 +96,27 @@ async def podman(*args: str, timeout: float = PODMAN_TIMEOUT_S, prefix: tuple[st
 class PodmanSandbox(Sandbox):
     async def start(self) -> None:
         image = self.env_id or get_task(self.task_name).image
-        name = CONTAINER_PREFIX + uuid.uuid4().hex[:16]
-        await podman(
-            "run", "-d", "--name", name, "--entrypoint=", "--pull=never", "--stop-timeout=0",
-            "--env", f"TEST_DIR={TEST_DIR}", "--env", "TERM=dumb",
-            image, "sleep", "infinity",
-            # -o: don't pass the lock to podman's detached helpers, which would
-            # keep it held for the container's whole life.
-            prefix=("flock", "-o", START_LOCK),
-        )  # fmt: skip
+        t0 = time.time()
+        for attempt in range(1, START_ATTEMPTS + 1):
+            name = CONTAINER_PREFIX + uuid.uuid4().hex[:16]
+            try:
+                await podman(
+                    "run", "-d", "--name", name, "--entrypoint=", "--pull=never", "--stop-timeout=0",
+                    "--env", f"TEST_DIR={TEST_DIR}", "--env", "TERM=dumb",
+                    image, "sleep", "infinity",
+                    # -o: don't pass the lock to podman's detached helpers, which would
+                    # keep it held for the container's whole life.
+                    prefix=("flock", "-o", START_LOCK),
+                )  # fmt: skip
+                break
+            except RuntimeError as e:
+                # The lock doesn't prevent every pasta failure. They're quick and
+                # transient, but leave a container behind that holds the name.
+                if "pasta failed" not in str(e) or attempt == START_ATTEMPTS:
+                    raise
+                await run_argv([PODMAN, "rm", "-f", name], PODMAN_TIMEOUT_S)
+                await asyncio.sleep(attempt)
+        self.start_seconds = time.time() - t0  # includes waiting for the lock
         self.env_id = name
 
     async def fork(self) -> "PodmanSandbox":
