@@ -3,7 +3,7 @@
     python scripts/plot_poster.py            # writes results/poster_figures/
     python scripts/plot_poster.py --out results/poster_figures
 
-fig1, fig2, fig3 and fig5 use the full runs at 4 prompts x 8 rollouts x 20 steps
+fig1, fig2, fig3 and fig5 (except fig5_siblings_sql_prefix) use the full runs at 4 prompts x 8 rollouts x 20 steps
 (results/sql_full_b4n8 and results/tbench_full_b4n8). fig4 compares the TVCache
 fix, so it uses results/sql_full_n16, the only runs from before the fix.
 
@@ -311,9 +311,9 @@ def fig_siblings(run, out, name, window=None, uid=None):
     if (calls["sandbox_s"] > 0).any():
         handles.append(Patch(color=SANDBOX))
         labels.append("Sandbox start")
-    if (calls["cls"] == "hit").any():
-        handles.append(plt.Line2D([], [], marker="D", color=HIT, linestyle="", markersize=9))
-        labels.append("Cache hit")
+    # Always listed, so the figures share one legend even when a group has no hit.
+    handles.append(plt.Line2D([], [], marker="D", color=HIT, linestyle="", markersize=9))
+    labels.append("Cache hit")
     ax.legend(handles, labels, ncol=len(labels), loc="lower left", bbox_to_anchor=(0, 1.0), fontsize=12,
               handlelength=1.2, columnspacing=1.2)
     note = f"{run['label']} · task {task} · one GRPO group"
@@ -337,9 +337,11 @@ def main():
     fig_miss_classes(runs, out)
     fig_position(runs, out)
     fig_time_budget(runs, out)
-    fig_nodelay(load(NODELAY_RUNS), out)
-    by = {r["label"]: r for r in runs}
+    prefix = load(NODELAY_RUNS)
+    fig_nodelay(prefix, out)
+    by = {r["label"]: r for r in runs + prefix}
     fig_siblings(by["SkyRL-SQL · cache on"], out, "fig5_siblings_sql")
+    fig_siblings(by["SkyRL-SQL · cache on (pre-fix)"], out, "fig5_siblings_sql_prefix")
     fig_siblings(by["Terminal-Bench easy · cache on"], out, "fig5_siblings_terminal", window=WINDOW_TB)
     print(f"figures written to {out}")
 
