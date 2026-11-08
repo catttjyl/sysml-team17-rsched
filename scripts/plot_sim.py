@@ -94,6 +94,51 @@ def main() -> None:
     for ext in ("png", "pdf"):
         fig.savefig(out / f"fig6_sim_policies.{ext}", bbox_inches="tight")
     print(f"wrote {out}/fig6_sim_policies.png")
+    column_figure(out)
+
+
+def column_figure(out: Path) -> None:
+    """Narrow version for one 8.2-inch poster column, drawn at print size (fonts are real points)."""
+    pols = [("default", "default"), ("hold:inf", "hold"), ("scout:inf", "scout")]
+    data = {}
+    for folder, label in RUNS:
+        run = load_run(str(ROOT / "results" / "tbench_full_b4n8" / folder))
+        data[label] = [summarize(simulate(run, Policy.parse(p))) for p, _ in pols]
+    with plt.rc_context({"font.size": 17, "axes.titlesize": 20, "xtick.labelsize": 16, "ytick.labelsize": 15,
+                         "axes.labelsize": 16, "legend.fontsize": 16}):
+        fig, axes = plt.subplots(1, 2, figsize=(8.2, 4.3), gridspec_kw={"wspace": 0.42})
+        w = 0.38
+        colors = [HIT, LIGHT]
+        base = {k: v[0]["makespan_mean"] for k, v in data.items()}
+        panels = [
+            (axes[0], "Tool-call hit rate", lambda k, r: r["tool"]["hit_rate"], "{:.1%}"),
+            (axes[1], "Step time vs. default", lambda k, r: r["makespan_mean"] / base[k] - 1, "{:+.0%}"),
+        ]
+        for ax, title, get, fmt in panels:
+            for j, (label, rows) in enumerate(data.items()):
+                xs = [i + (j - 0.5) * w for i in range(len(pols))]
+                vals = [get(label, r) for r in rows]
+                ax.bar(xs, vals, w, color=colors[j], label=label)
+                for xi, v in zip(xs, vals):
+                    if abs(v) >= 0.005:
+                        ax.text(xi, v, fmt.format(v), ha="center", va="bottom", fontsize=12, color=INK2)
+                if ax is axes[0]:
+                    ax.hlines(rows[0]["tool"]["upper_bound"], -0.5, len(pols) - 0.5, colors=colors[j],
+                              linestyles=(0, (4, 3)), lw=2)
+            ax.set_xticks(range(len(pols)), [p for _, p in pols])
+            ax.set_title(title)
+            ax.yaxis.grid(True, color=GRID)
+            ax.set_axisbelow(True)
+            ax.margins(y=0.16)
+            ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
+        from matplotlib.lines import Line2D
+        from matplotlib.patches import Patch
+        fig.legend([Patch(color=HIT), Patch(color=LIGHT), Line2D([], [], color=INK2, ls=(0, (4, 3)), lw=2)],
+                   ["TB easy", "TB medium", "upper bound"], ncol=3, loc="lower center",
+                   bbox_to_anchor=(0.5, -0.13), handlelength=1.6, columnspacing=1.2)
+        for ext in ("png", "pdf"):
+            fig.savefig(out / f"fig6_sim_policies_column.{ext}", bbox_inches="tight")
+    print(f"wrote {out}/fig6_sim_policies_column.png")
 
 
 if __name__ == "__main__":
