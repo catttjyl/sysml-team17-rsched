@@ -22,23 +22,27 @@ Done
 - Found and fixed a TVCache bug that added about 85 ms to every call (TCP_NODELAY not set). `install.sh` applies the fix. Details in `results/sql_full_n16/README.md`.
 - Toy runs: `results/toy_n4/`.
 - Full SkyRL-SQL runs, 16 rollouts per prompt, 20 steps, cache on (before and after the fix) and off: `results/sql_full_n16/`.
-- Full SkyRL-SQL runs with the same setup as Terminal-Bench (4 prompts, 8 rollouts, 20 steps), cache on and off: `results/sql_full_b4n8/`. Use these to compare the two workloads.
-- Terminal-Bench 1 runs in podman-hpc containers on Perlmutter. See "Running the real Terminal-Bench tasks" below.
+- Full SkyRL-SQL runs with 4 prompts, 8 rollouts, 20 steps (same setup with TVCache paper), cache on and off: `results/sql_full_b4n8/`.
+- Full Terminal-Bench runs, easy and medium, same setup above, cache on and off: `results/tbench_full_b4n8/`.
+- Plotting script `scripts/plot.py`, with figures for the toy and full runs in `results/figures/`. Tool time counts command execution only and leaves out sandbox start.
 
 First findings
 
-- Timing misses are rare: 1 to 5% of tool calls, and under 1% on full SQL after the fix.
-- All timing misses are on the first tool call. This fits H1.
+- On SQL task, timing misses are rare: 1 to 5% of tool calls, and under 1% on full SQL after the fix.
 - Faster tool calls mean fewer timing misses. After the fix, timing misses on SQL dropped from 7 to 1.
+- On Terminal-Bench, tool time is larger than generation time, even without sandbox start. Scheduling has room to save time here. This fits H2.
+- On Terminal-Bench, timing misses are as common as hits on easy and are almost all reusable calls on medium. Hit rate is 4.2-4.9% on easy (upper bound 8-12%) and 0-0.2% on medium (upper bound about 8%). A reuse-aware scheduler could at best about double the hit rate on easy and take medium from about 0% to about 8%.
+- Sandbox start is 66-78% of raw tool time on Terminal-Bench. Scheduling cannot change it, so it is left out of tool time.
+- Timed-out calls (600 s) make up most of Terminal-Bench tool time. Results should be checked with and without them.
+- All hits and all timing misses are on the first tool call. This fits H1.
 - SQL tool calls are very fast (about 2 ms) and take under 0.1% of generation time. Scheduling can save almost nothing on SQL. This fits H2.
-- After the fix, the cache adds about 1 ms per call.
-- Toy terminal calls are also fast (median about 0.1 s), so they cannot show a scheduling gain either.
 
 Next
 
-- Build the Terminal-Bench 1 images and run the first container runs. See "Running the real Terminal-Bench tasks" below.
-- Trace analysis on the full SQL runs.
-- Simulator v0 that replays the traces.
+- Simulator that replays the Terminal-Bench and SQL traces, so scheduling policies can be compared offline.
+- Reuse-aware scheduler that turns timing misses into hits: hold or delay sibling rollouts until the first call with the same key finishes. Test it in the simulator first, then in veRL.
+- Measure the scheduler by hit rate (against the upper bound) and by step time. Tool time must leave out sandbox start, the same as the baseline.
+- Look into why cache-on Terminal-Bench runs have longer step times than cache-off (about 200 s vs 134-151 s).
 - Report the TCP_NODELAY fix upstream.
 
 Known limits

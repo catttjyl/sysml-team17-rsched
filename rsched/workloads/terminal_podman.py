@@ -66,7 +66,6 @@ shift
 eval "$_rsched_cmd"
 """
 
-_PYTEST_PASSED = {"PASSED", "XFAIL", "SKIPPED"}
 _PYTEST_FAILED = {"FAILED", "XPASS", "ERROR"}
 
 
