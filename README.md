@@ -202,6 +202,27 @@ Add `CACHE=off` for the baseline. Plot the results the same way as for SQL, with
 
 - Loaded images and snapshots live in `/tmp`, which is memory-backed on compute nodes and cleared between jobs. Snapshots are not evicted during a run, so long runs can use a lot of memory.
 
+## Simulator
+
+`rsched/sim/` replays recorded timelines under other scheduling policies, with no GPU needed. Each rollout replays its own generation turns, overheads and tool calls. A cached call hits once the same key has finished somewhere in the run.
+
+```bash
+python scripts/simulate.py results/tbench_full_b4n8/tb-easy_cache-on \
+  --policies default hold:10 hold:inf scout:30 scout:30+hold:inf [--json out.json]
+```
+
+- `default`: never wait (veRL today). Replaying a cache-on run with it reproduces the recorded hits, timing misses and step makespan.
+- `hold:<tau>`: bounded delay. A call whose key is being filled by another rollout waits up to `tau` s. If the fill is not done by then, the call executes anyway, and the wait is wasted.
+- `scout:<tau>`: one scout per prompt starts first. Its siblings start when the scout's first cached call finishes, or after `tau` s.
+
+Model notes:
+
+- **Sandbox start is not tool time.** In the trace it is inside `t_end - t_start` of a rollout's first executed call. The simulator removes it from the call and charges it to whichever call first needs a live sandbox. A rollout whose first call hits pays it on its next executed call or on its test. Scheduling can move this cost but not remove it, so it is reported in its own column.
+- **The Terminal-Bench test is a cached call too.** `executor.test(history)` is keyed by the full history. Siblings with the same history share it, including all rollouts that made no tool call. It is reported as "test hit rate".
+- Generation times are fixed from the trace. There is no GPU contention model, so holding a rollout does not speed up the others' generation. "gen-busy" is the share of step time with at least one generation running.
+- A hit returns the recorded output, so later turns stay the same.
+- If no rollout in a run makes a tool call, the sandbox start cost is unknown and treated as 0.
+
 ## Miss classes (draft definition from the proposal)
 
 Take a call that missed at time _t_ with key _K_:
