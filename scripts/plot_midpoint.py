@@ -1,12 +1,16 @@
-"""Summary figures for examples A-D (results/examples_perlmutter).
+"""Midpoint figures.
 
-    python scripts/plot_midpoint.py   # reads results/examples_perlmutter, writes results/midpoint_figures/
+    python scripts/plot_midpoint.py   # writes results/midpoint_figures/
 
-F1  pipeline architecture
-F2  what a timing miss is, and what reuse-aware scheduling would change
-F3  rollout timelines for examples A-D (one GRPO group of 4 siblings each)
-F4  where a rollout's wall time goes (generation / tool calls / reward test)
-F5  per-call tool latency, A-D, log scale
+F1  pipeline architecture (no data)
+F2  what a timing miss is, and what reuse-aware scheduling would change (no data)
+F3  rollout timelines, one GRPO group of 8 siblings per workload
+F4  where a rollout's time goes (generation / sandbox start / tool calls / reward test)
+F5  per-call tool latency, cache on and off, log scale
+
+F3-F5 use the full runs at 4 prompts x 8 rollouts x 20 steps
+(results/sql_full_b4n8 and results/tbench_full_b4n8). Tool time counts command
+execution only; sandbox (container) start is shown on its own.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import FancyBboxPatch, Patch  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
-RES = HERE.parent / "results" / "examples_perlmutter"
+RES = HERE.parent / "results"
 OUT = HERE.parent / "results" / "midpoint_figures"
 OUT.mkdir(exist_ok=True)
 
@@ -32,6 +36,8 @@ INK, INK2, GRID, SURF = "#0b0b0b", "#52514e", "#e4e2dc", "#fcfcfb"
 GEN = "#c9c7c0"        # LLM generation
 TOOL = "#6250d6"       # tool call (violet: not reused from hit/timing colors)
 TEST = "#1baf7a"       # reward test
+SANDBOX = "#cfcbe8"    # sandbox (container) start
+TIMEOUT = "#9a99a3"    # tool calls that hit the command timeout
 HIT, TIMING, COLD = "#2a78d6", "#eb6834", "#b5b3ad"
 
 plt.rcParams.update({
@@ -43,12 +49,13 @@ plt.rcParams.update({
     "figure.facecolor": "white", "savefig.facecolor": "white", "savefig.dpi": 300,
 })
 
-EXAMPLES = [
-    ("exA_sql-toy", "A · SQL toy"),
-    ("exB_term-toy", "B · Terminal toy"),
-    ("exC_sql-full", "C · SkyRL-SQL"),
-    ("exD_tb-one", "D · Terminal-Bench (hello-world)"),
+# (run folder without the _cache-on/off suffix, label)
+WORKLOADS = [
+    ("sql_full_b4n8/sql", "SkyRL-SQL"),
+    ("tbench_full_b4n8/tb-easy", "Terminal-Bench easy"),
+    ("tbench_full_b4n8/tb-medium", "Terminal-Bench medium"),
 ]
+SETUP = "Qwen2.5-1.5B, 20 GRPO steps × 4 prompts × 8 rollouts"
 
 
 def save(fig, name):
@@ -167,6 +174,12 @@ def fig_concept():
 
 
 # ---------------------------------------------------------------- F3 timelines
+def tool_parts(e):
+    """(sandbox start, command time, timed out) for one tool event."""
+    sb = e.get("sandbox_start_s") or 0.0
+    return sb, max(e["t_end"] - e["t_start"] - sb, 0.0), bool(e.get("uncacheable"))
+
+
 def rollout_segments(ev):
     t0 = min(e["t"] for e in ev if e["ev"] == "rollout_start")
     rolls = sorted({e["rollout"] for e in ev if e["ev"] == "rollout_start"})
@@ -174,95 +187,124 @@ def rollout_segments(ev):
     for e in ev:
         if e["ev"] == "gen_end":
             seg[e["rollout"]].append(("gen", e["t_start"] - t0, e["t"] - e["t_start"]))
-        elif e["ev"] == "tool":
-            seg[e["rollout"]].append(("tool", e["t_start"] - t0, e["t_end"] - e["t_start"]))
+        elif e["ev"] == "tool" and e.get("error") is None:
+            sb, cmd, to = tool_parts(e)
+            x = e["t_start"] - t0
+            if sb:
+                seg[e["rollout"]].append(("sandbox", x, sb))
+            seg[e["rollout"]].append(("timeout" if to else "tool", x + sb, cmd))
         elif e["ev"] == "score":
             seg[e["rollout"]].append(("test", e["t_start"] - t0, e["t_end"] - e["t_start"]))
     reward = {e["rollout"]: e.get("reward") for e in ev if e["ev"] == "rollout_end"}
     return rolls, seg, reward
 
 
+def pick_group(ev):
+    """The group with the most timing-miss candidates: the most siblings that call a tool on turn 1."""
+    first = defaultdict(set)
+    for e in ev:
+        if e["ev"] == "tool" and e.get("seq") == 1:
+            first[e["uid"]].add(e["rollout"])
+    return max(first, key=lambda u: len(first[u]))
+
+
+COLORS = {"gen": GEN, "sandbox": SANDBOX, "tool": TOOL, "timeout": TIMEOUT, "test": TEST}
+NAMES = {"gen": "LLM generation", "sandbox": "Sandbox start", "tool": "Tool call",
+         "timeout": "Tool call that timed out", "test": "Reward test"}
+
+
 def fig_timelines():
-    fig, axes = plt.subplots(4, 1, figsize=(13, 9.5), sharex=True)
-    colors = {"gen": GEN, "tool": TOOL, "test": TEST}
-    for ax, (run, label) in zip(axes, EXAMPLES):
-        rolls, seg, reward = rollout_segments(events(f"{run}_cache-on"))
+    fig, axes = plt.subplots(len(WORKLOADS), 1, figsize=(13, 11))
+    for ax, (run, label) in zip(axes, WORKLOADS):
+        ev = events(f"{run}_cache-on")
+        uid = pick_group(ev)
+        rolls, seg, reward = rollout_segments([e for e in ev if e.get("uid") == uid])
         for i, r in enumerate(rolls):
             for kind, x, w in seg[r]:
-                ax.barh(i, max(w, 0.06), left=x, height=0.6, color=colors[kind], edgecolor="white", linewidth=1)
+                ax.barh(i, max(w, 0.02), left=x, height=0.6, color=COLORS[kind], edgecolor="white", linewidth=0.8)
             end = max(x + w for _, x, w in seg[r])
             rw = reward.get(r)
-            ax.text(end + 0.2, i, f"reward {rw:+.0f}" if rw is not None else "", va="center", fontsize=10, color=INK2)
-        ax.set_yticks(range(len(rolls)), [f"R{i + 1}" for i in range(len(rolls))], fontsize=11)
+            ax.text(end, i, f"  reward {rw:+.0f}" if rw is not None else "", va="center", fontsize=9, color=INK2)
+        ax.set_yticks(range(len(rolls)), [f"R{i + 1}" for i in range(len(rolls))], fontsize=10)
         ax.invert_yaxis()
-        ax.set_title(label, fontsize=13)
+        task = next(e["task"] for e in ev if e.get("uid") == uid).split("|")[-1]
+        ax.set_title(f"{label} · task {task}", fontsize=13)
         ax.grid(axis="x", color=GRID)
         ax.set_axisbelow(True)
-    axes[-1].set_xlabel("Seconds since the group's rollouts started (cache on, 1 prompt × 4 siblings)")
-    handles = [Patch(color=GEN), Patch(color=TOOL), Patch(color=TEST)]
-    fig.legend(handles, ["LLM generation", "Tool call", "Reward test (runs in the sandbox, via the cache)"],
-               ncol=3, loc="lower center", bbox_to_anchor=(0.5, -0.03), fontsize=12)
-    fig.suptitle("One GRPO group per example: generation dominates SQL; the sandbox dominates Terminal-Bench",
+        ax.margins(x=0.08)
+    axes[-1].set_xlabel("Seconds since the group's rollouts started (cache on, 1 prompt × 8 siblings)")
+    kinds = list(COLORS)
+    fig.legend([Patch(color=COLORS[k]) for k in kinds], [NAMES[k] for k in kinds],
+               ncol=len(kinds), loc="lower center", bbox_to_anchor=(0.5, -0.02), fontsize=11)
+    fig.suptitle("One GRPO group per workload: generation dominates SQL; the sandbox dominates Terminal-Bench",
                  x=0.01, ha="left", fontsize=16, fontweight="bold")
-    fig.tight_layout(rect=(0, 0.02, 1, 1))
+    fig.tight_layout(rect=(0, 0.03, 1, 1))
     save(fig, "F3_rollout_timelines")
 
 
 # ---------------------------------------------------------------- F4 time budget
 def fig_budget():
     data = []
-    for run, label in EXAMPLES:
+    for run, label in WORKLOADS:
         ev = events(f"{run}_cache-on")
         rolls, seg, _ = rollout_segments(ev)
         n = len(rolls)
-        tot = {k: sum(w for r in rolls for kk, _, w in seg[r] if kk == k) / n for k in ("gen", "tool", "test")}
+        tot = {k: sum(w for r in rolls for kk, _, w in seg[r] if kk == k) / n for k in COLORS}
         data.append((label, tot))
-    fig, ax = plt.subplots(figsize=(12, 4.2))
-    colors = {"gen": GEN, "tool": TOOL, "test": TEST}
-    names = {"gen": "LLM generation", "tool": "Tool calls", "test": "Reward test"}
+    fig, ax = plt.subplots(figsize=(13, 4.2))
     for i, (label, tot) in enumerate(data):
         left = 0
         total = sum(tot.values())
-        for k in ("gen", "tool", "test"):
-            ax.barh(i, tot[k], left=left, height=0.6, color=colors[k], edgecolor="white", linewidth=2)
-            if tot[k] / total > 0.08:
+        for k in COLORS:
+            ax.barh(i, tot[k], left=left, height=0.6, color=COLORS[k], edgecolor="white", linewidth=2)
+            if tot[k] / total > 0.06 and tot[k] > 3:
                 ax.text(left + tot[k] / 2, i, f"{tot[k] / total:.0%}", ha="center", va="center",
-                        fontsize=11, color="white" if k != "gen" else INK)
+                        fontsize=11, color="white" if k in ("tool", "test") else INK)
             left += tot[k]
-        ax.text(left + 0.2, i, f"{total:.1f} s", va="center", fontsize=11, color=INK2)
+        ax.text(left + 0.4, i, f"{total:.1f} s", va="center", fontsize=11, color=INK2)
     ax.set_yticks(range(len(data)), [d[0] for d in data])
     ax.invert_yaxis()
-    ax.set_xlabel("Seconds per rollout (mean of 4 siblings, cache on); segments are summed, not wall-clock")
+    ax.set_xlabel("Seconds per rollout (mean over 640 rollouts, cache on); segments are summed, not wall-clock")
     ax.grid(axis="x", color=GRID)
     ax.set_axisbelow(True)
-    ax.legend([Patch(color=colors[k]) for k in colors], [names[k] for k in colors], ncol=3,
-              loc="upper left", bbox_to_anchor=(0, -0.22))
-    ax.set_title("Where a rollout's time goes: environment work is ~0% for SQL, ~70% for Terminal-Bench", pad=10)
+    ax.legend([Patch(color=COLORS[k]) for k in COLORS], [NAMES[k] for k in COLORS], ncol=len(COLORS),
+              loc="upper left", bbox_to_anchor=(0, -0.3), fontsize=11)
+    ax.text(0, -0.62, SETUP + ". The reward test also starts a sandbox when the rollout made no tool call.",
+            transform=ax.transAxes, fontsize=10.5, color=INK2)
+    ax.set_title("Where a rollout's time goes: environment work is ~0% for SQL and most of it for Terminal-Bench",
+                 pad=10)
     fig.tight_layout()
     save(fig, "F4_time_budget")
 
 
 # ---------------------------------------------------------------- F5 latency
 def fig_latency():
-    fig, ax = plt.subplots(figsize=(12, 4.2))
-    for i, (run, label) in enumerate(EXAMPLES):
-        for j, (cache, mk) in enumerate([("on", "o"), ("off", "s")]):
-            rows = list(csv.DictReader(open(RES / f"{run}_cache-{cache}" / "tool_calls.csv")))
-            xs = [(float(r["t_end"]) - float(r["t_start"])) * 1000 for r in rows]
-            y = i + (j - 0.5) * 0.28
-            ax.scatter(xs, [y] * len(xs), s=70, marker=mk, color=TOOL if cache == "on" else INK2,
-                       edgecolor="white", linewidth=1.2, zorder=3, label=f"cache {cache}" if i == 0 else None)
+    fig, ax = plt.subplots(figsize=(13, 4.4))
+    for i, (run, label) in enumerate(WORKLOADS):
+        for j, cache in enumerate(["on", "off"]):
+            ev = [e for e in events(f"{run}_cache-{cache}") if e["ev"] == "tool" and e.get("error") is None
+                  and not e.get("hit")]
+            parts = [tool_parts(e) for e in ev]
+            xs = [cmd * 1000 for _, cmd, to in parts if not to]
+            tos = [cmd * 1000 for _, cmd, to in parts if to]
+            y = i + (j - 0.5) * 0.3
+            ax.scatter(xs, [y] * len(xs), s=22, marker="o" if cache == "on" else "s", alpha=0.45,
+                       color=TOOL if cache == "on" else INK2, linewidth=0, zorder=3,
+                       label=f"cache {cache}" if i == 0 else None)
+            if tos:
+                ax.scatter(tos, [y] * len(tos), s=60, marker="x", color=INK, zorder=4,
+                           label="timed out (600 s)" if i == 1 and j == 0 else None)
             if cache == "on":
-                ax.text(4e4, i, f"median {statistics.median(xs):,.0f} ms", va="center", fontsize=11, color=INK2)
+                ax.text(4e6, i, f"median {statistics.median(xs):,.3g} ms", va="center", fontsize=11, color=INK2)
     ax.set_xscale("log")
-    ax.set_xlim(0.5, 3e5)
-    ax.set_yticks(range(4), [l for _, l in EXAMPLES])
+    ax.set_xlim(0.3, 3e7)
+    ax.set_yticks(range(len(WORKLOADS)), [l for _, l in WORKLOADS])
     ax.invert_yaxis()
     ax.grid(axis="x", color=GRID)
     ax.set_axisbelow(True)
-    ax.set_xlabel("Time per tool call (ms, log scale); each dot is one call")
-    ax.legend(loc="upper left", bbox_to_anchor=(0, -0.2), ncol=2)
-    ax.set_title("A Terminal-Bench call is ~1,000× slower than a SQL call", pad=10)
+    ax.set_xlabel("Time per cold tool call (ms, log scale; sandbox start left out); each dot is one call")
+    ax.legend(loc="upper left", bbox_to_anchor=(0, -0.2), ncol=3)
+    ax.set_title("A Terminal-Bench call is ~300× slower than a SQL call", pad=10)
     fig.tight_layout()
     save(fig, "F5_tool_latency")
 
