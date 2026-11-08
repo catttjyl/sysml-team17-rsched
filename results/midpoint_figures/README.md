@@ -1,7 +1,7 @@
 # Midpoint figures
 
 F1 and F2 are diagrams with no data. F3 to F5 use the full runs in `results/sql_full_b4n8` and `results/tbench_full_b4n8`: 20 GRPO steps, 4 prompts × 8 rollouts, with the cache on and off. Tool time counts command execution only; sandbox (container) start is shown on its own.
-Regenerate them with `python scripts/plot_midpoint.py`. Each figure is saved as PNG (300 dpi) and PDF.
+Regenerate them with `python scripts/plot_midpoint.py`. Each figure is saved as PNG (300 dpi).
 
 | Figure | What it shows | How to read it |
 |---|---|---|

@@ -1,7 +1,7 @@
 # Poster figures
 
 fig1, fig2, fig3 and fig5 use the full runs in `results/sql_full_b4n8` and `results/tbench_full_b4n8` (20 GRPO steps, 4 prompts × 8 rollouts). fig4 and fig5_siblings_sql_prefix use `results/sql_full_n16`, the only runs from before the TVCache fix. Tool time counts command execution only; sandbox (container) start is left out.
-Regenerate them with `python scripts/plot_poster.py`. Each figure is saved as PNG (300 dpi) and PDF.
+Regenerate them with `python scripts/plot_poster.py`. Each figure is saved as PNG (300 dpi).
 The colors mean the same thing in every figure: blue is a hit, orange is a timing miss, and gray is a cold miss.
 
 | Figure | What it shows | How to read it |

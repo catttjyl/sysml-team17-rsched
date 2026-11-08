@@ -10,7 +10,7 @@ fix, so it uses results/sql_full_n16, the only runs from before the fix.
 Tool time counts command execution only: sandbox (container) start is left out,
 the same as scripts/plot.py.
 
-Every figure is written as PNG (300 dpi) and PDF. Sizes are in inches for a
+Every figure is written as PNG (300 dpi). Sizes are in inches for a
 poster panel; fonts are large enough to read from about 1.5 m.
 """
 
@@ -104,7 +104,7 @@ def load(spec):
 
 
 def save(fig, out: Path, name: str):
-    for ext in ("png", "pdf"):
+    for ext in ("png",):
         fig.savefig(out / f"{name}.{ext}", bbox_inches="tight")
     plt.close(fig)
 

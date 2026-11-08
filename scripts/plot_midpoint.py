@@ -59,7 +59,7 @@ SETUP = "Qwen2.5-1.5B, 20 GRPO steps × 4 prompts × 8 rollouts"
 
 
 def save(fig, name):
-    for ext in ("png", "pdf"):
+    for ext in ("png",):
         fig.savefig(OUT / f"{name}.{ext}", bbox_inches="tight")
     plt.close(fig)
 
