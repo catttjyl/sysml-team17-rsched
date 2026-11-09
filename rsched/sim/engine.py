@@ -4,9 +4,12 @@ Model
 -----
 * Steps run one after another; between steps the trace's training time is
   replayed unchanged. The cache persists across steps (one TVCache per run).
-* Every rollout replays its own segments. Generation and overhead take their
-  recorded time: holding a rollout does not change its generations (no GPU
-  contention model yet; see ``gen_busy`` for the utilisation proxy).
+* Every rollout replays its own segments. Overheads take their recorded time.
+  Generations take their recorded time with ``gpu="fixed"`` (the default).
+  With ``gpu="shared"`` they share the accelerator: each has an amount of
+  work and progresses at ``run.gpu`` speed for the number of generations
+  running (see ``gpu.py``). Under the recorded schedule both give the same
+  times; holding rollouts back only matters with ``shared``.
 * A cacheable call with key K at time t:
     - an execution of K already finished  -> hit (``hit_latency``)
     - an execution of K is still running  -> the policy may wait for it, up to
@@ -125,7 +128,7 @@ class SimResult:
 
 class _R:
     __slots__ = ("ro", "i", "has_sandbox", "waited_i", "wait_acc", "started", "t_start", "gens", "done", "t_ready",
-                 "stale", "hist")
+                 "stale", "hist", "gen_ver", "gen_t0")
 
     def __init__(self, ro: Rollout):
         self.ro = ro
@@ -140,6 +143,8 @@ class _R:
         self.t_ready = 0.0  # when the rollout would have started without gating
         self.stale = 0.0  # command seconds of hit calls not yet applied to the sandbox
         self.hist = 0.0  # command seconds of all successful calls (replayed after an error)
+        self.gen_ver = 0  # gpu="shared": version of this rollout's pending gen_end event
+        self.gen_t0 = 0.0
 
 
 def lock_service(run: Run) -> float:
@@ -159,9 +164,11 @@ def lock_service(run: Run) -> float:
     return run.sandbox_svc
 
 
-def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
+def simulate(run: Run, policy: Policy, sandbox: str = "queue", gpu: str = "fixed") -> SimResult:
     if sandbox not in ("queue", "fixed"):
         raise ValueError(f"sandbox must be 'queue' or 'fixed', not {sandbox!r}")
+    if gpu not in ("fixed", "shared"):
+        raise ValueError(f"gpu must be 'fixed' or 'shared', not {gpu!r}")
     if not run.has_lock:
         sandbox = "fixed"  # no podman starts in this trace: nothing to queue
     svc = lock_service(run) if sandbox == "queue" else 0.0
@@ -193,6 +200,24 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
             r.t_ready = t0 + r.ro.start
             push(r.t_ready, r, "start")
 
+        # gpu="shared": generations in progress, as rollout -> [remaining work, last update]
+        active: dict[_R, list[float]] = {}
+
+        def gpu_advance(now: float) -> None:
+            if active:
+                rel = run.gpu.relative(len(active))
+                for st in active.values():
+                    st[0] -= rel * (now - st[1])
+                    st[1] = now
+
+        def gpu_reschedule(now: float) -> None:
+            """The load changed: every running generation gets a new end time (old events go stale)."""
+            if active:
+                rel = run.gpu.relative(len(active))
+                for rr, st in active.items():
+                    rr.gen_ver += 1
+                    push(now + max(0.0, st[0]) / rel, rr, ("gen_end", rr.gen_ver))
+
         def open_gate(uid: str, now: float) -> None:
             if gate_open.get(uid, 0.0) is None:
                 gate_open[uid] = now
@@ -216,6 +241,16 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
             if tag == "gate_open":
                 open_gate(r.ro.uid, now)
                 continue
+            if isinstance(tag, tuple):  # ("gen_end", version)
+                if tag[1] != r.gen_ver or r not in active:
+                    continue  # rescheduled since
+                gpu_advance(now)
+                del active[r]
+                r.gens.append((r.gen_t0, now))
+                r.i += 1
+                gpu_reschedule(now)
+                push(now, r)
+                continue
             if tag in ("start", "gate_timeout"):
                 if r.started:
                     continue
@@ -236,6 +271,12 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
                     open_gate(r.ro.uid, now)
                 continue
             s = segs[r.i]
+            if s.kind == "gen" and gpu == "shared":
+                gpu_advance(now)
+                r.gen_t0 = now
+                active[r] = [s.work, now]
+                gpu_reschedule(now)
+                continue
             if s.kind in ("gen", "gap") or (s.kind == "score" and s.key is None):  # SQL scoring: not a cache call
                 if s.kind == "gen":
                     r.gens.append((now, now + s.dur))
