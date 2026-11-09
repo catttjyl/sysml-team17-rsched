@@ -286,3 +286,28 @@ def test_hold_waits_once_not_behind_retries(tmp_path):
     waits = {x.rollout: x.wait_s for x in res.calls if x.kind == "tool"}
     assert waits["B"] == pytest.approx(1 + SB + t - 2, abs=0.01)
     assert waits["C"] == pytest.approx(1 + SB + t - 3, abs=0.01)
+
+
+def test_free_sandbox_costs_nothing(siblings):
+    """sandbox="free" is a warm pool: no start is charged, everything else replays as before."""
+    run = load_run(siblings)
+    fixed = summarize(simulate(run, Policy.parse("default"), sandbox="fixed"))
+    free = summarize(simulate(run, Policy.parse("default"), sandbox="free"))
+    assert free["sandbox_s"] == 0.0 and free["sandbox_starts"] == 0
+    assert free["tool"]["cmd_s"] == pytest.approx(fixed["tool"]["cmd_s"])
+    assert free["makespan_total"] < fixed["makespan_total"]
+    with pytest.raises(ValueError):
+        simulate(run, Policy.parse("default"), sandbox="warm")
+
+
+def test_free_sandbox_hold_saves_only_the_command(siblings):
+    """With free starts, A's k1 ends at 1 + CMD = 3 s. B issues k1 at 2 s: holding means waiting 1 s
+    for A instead of running it itself (2 s). No start time is involved either way."""
+    run = load_run(siblings)
+    d = simulate(run, Policy.parse("default"), sandbox="free")
+    h = simulate(run, Policy.parse("hold:inf"), sandbox="free")
+    b_d = next(c for c in d.calls if c.rollout == "B" and c.key == "k1")
+    b_h = next(c for c in h.calls if c.rollout == "B" and c.key == "k1")
+    assert b_d.t_end == pytest.approx(2 + CMD)
+    assert b_h.outcome == "held_hit" and b_h.t_end == pytest.approx(1 + CMD, abs=0.01)
+    assert summarize(h)["sandbox_s"] == 0.0

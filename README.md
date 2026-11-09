@@ -241,6 +241,19 @@ Model notes:
   - A call waits at most once. If the execution it waited for inserts nothing, it runs the call itself rather than queueing behind another sibling's retry.
   - A 10 s bound recovers most of the reuse anyway: tool hit rate 10.2% of a possible 11.5% on easy, 5.1% of 8.0% on medium.
 - **Where the waiting goes.** Most held seconds are on tests, not tool calls. Held tool calls wait a median of about 5–8 s, held tests about 30–35 s. Most of the sandbox starts holding saves come from no-tool rollouts whose test now hits. On TB medium, the starts saved don't cover the waiting.
+- **Containers free (`--sandbox free`).** Every container start costs nothing, as with a warm pool of pre-started containers (standard practice elsewhere, not in our setup). This isolates what a schedule does by itself. It matters because some time gains under the queue model come from *container-start contention*, not reuse:
+
+  | Total time vs default | hold ≤ 5 s | ≤ 10 s | ≤ 30 s | no limit | scout ≤ 30 s |
+  |---|---|---|---|---|---|
+  | TB easy, queue (as run) | −0.6% | −1.0% | −2.1% | −2.5% | −0.1% |
+  | TB easy, containers free | +0.5% | +1.7% | −0.1% | −0.1% | +2.6% |
+  | TB medium, queue | −0.3% | −0.8% | −0.6% | −2.4% | −0.2% |
+  | TB medium, containers free | +0.6% | +1.4% | +3.2% | −0.0% | +6.3% |
+
+  - With free starts, a hit saves only the command or the test, and waiting costs time.
+  - **Evaluate policies across scenarios (queue and free) and across runs.** Keep a policy only if it never costs much anywhere, or say which scenario a claim is for.
+  - By that rule, short holds are the most robust: `hold:5` stays within ±0.8% everywhere.
+  - Hits shift too. With free starts, first copies finish sooner, so short holds catch more: `hold:5` reaches 11.5% on easy and 6.7% on medium, vs 8.8% and 3.0% under the queue model. Default also rises (4.9% → 6.0% easy, 0% → 1.3% medium). Only the reuse bound and the unlimited hold are the same in both scenarios.
 - **Neither sandbox model is validated for non-default schedules.** The queue model's step-time gains come from fewer sandbox starts. The fixed model charges a delayed rollout its recorded queued start, which overstates the cost of delaying it. The figures show both.
 - **No accelerator model.** Batch-by-prompt and priority policies, and the hit-rate vs. accelerator-idle trade-off, need one. Scout frees no GPU time here; in the queue model it only spreads out sandbox starts.
 
