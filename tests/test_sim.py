@@ -245,3 +245,30 @@ def test_hold_cost_with_tau_applies_both_limits(tmp_path):
     assert summarize(simulate(run, Policy.parse("hold:cost"), sandbox="fixed"))["tool"]["held_hits"] == 1
     s = summarize(simulate(run, Policy.parse("hold:cost+hold:10"), sandbox="fixed"))
     assert s["tool"]["held_hits"] == 0 and s["tool"]["wait_s"] == 0.0  # 115 s > 10 s: no wait at all
+
+
+def test_hold_waits_on_a_timeout_then_executes(tmp_path):
+    """A's call times out (no insert). Holding B can't know: it waits for A's end, finds nothing, runs."""
+    a = [("gen", 0, 1, {}), ("tool", 1, 1 + SB + 50, {**_tool("k1", 1), "uncacheable": True}),
+         ("score", 67, 67 + TEST, {})]
+    b = [("gen", 0, 2, {}), ("tool", 2, 2 + SB + 50, {**_tool("k1", 1), "uncacheable": True}),
+         ("score", 68, 68 + TEST, {})]
+    run = load_run(_write(tmp_path, [("A", a), ("B", b)]))
+    s = summarize(simulate(run, Policy.parse("hold:inf"), sandbox="fixed"))
+    assert s["tool"]["hits"] == 0
+    assert s["tool"]["wait_s"] == pytest.approx(1 + SB + 50 - 2, abs=0.01)
+
+
+def test_hit_on_snapshot_forks_instead_of_replaying(tmp_path):
+    """B hits A's snapshotted k1, then misses k2: it forks (a sandbox start), no replay of k1."""
+    a = [("gen", 0, 1, {}), ("tool", 1, 1 + SB + 10, _tool("k1", 1)), ("score", 27, 27 + TEST, {})]
+    b = [("gen", 0, 30, {}), ("tool", 30, 30.001, _tool("k1", 1, hit=True)), ("gen", 30, 31, {}),
+         ("tool", 31, 31 + SB + CMD, _tool("k2", 2)), ("score", 49, 49 + TEST, {})]
+    d = _write(tmp_path, [("A", a), ("B", b)])
+    run = load_run(d)
+    for seg in (x for st in run.steps for r in st.rollouts for x in r.segs):
+        if seg.key == "k1":
+            seg.snap = True
+    res = simulate(run, Policy.parse("default"), sandbox="fixed")
+    k2 = next(c for c in res.calls if c.key == "k2")
+    assert k2.replay_s == 0.0 and k2.sandbox_s == pytest.approx(SB)

@@ -15,7 +15,11 @@ Model
     - otherwise                           -> execute
 * An execution costs ``cmd_s``, plus a sandbox start if the rollout has none
   yet, plus re-running any calls it hit since its sandbox was last brought up
-  to date (no snapshots in these runs, so a miss after a hit replays them).
+  to date. A hit on a snapshotted call instead means the next execution forks
+  from the snapshot: a new sandbox start, and only later hits are re-run.
+* A rollout can wait on any execution of the key in flight, including one
+  that will time out (the scheduler can't know): it then finds no entry and
+  executes itself. Only finished cacheable executions are hits.
 * Sandbox starts (``sandbox="queue"``, the default) go through one FIFO lock
   shared by the whole run, as ``flock`` does on the node: each start holds it
   for ``run.sandbox_svc`` seconds, calibrated so that the default replay's
@@ -163,6 +167,7 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
     svc = lock_service(run) if sandbox == "queue" else 0.0
     res = SimResult(run, policy)
     fill_end: dict[str, float] = {}  # key -> earliest time a started execution's result is visible
+    inflight: dict[str, list[float]] = {}  # key -> when each started execution ends or becomes visible
     lock_free = -math.inf  # sandbox start lock, shared across steps
     t = 0.0
     for si, step in enumerate(run.steps):
@@ -248,28 +253,34 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
                 outcome = "hit" if r.wait_acc == 0.0 else "held_hit"
                 _record(res, si, r, s, now - r.wait_acc, now + lat, outcome, r.wait_acc, 0.0, 0.0, 0.0)
                 r.wait_acc = 0.0
-                r.stale += s.cmd_s
-                r.hist += s.cmd_s
+                if s.snap:  # the next execution forks from this call's snapshot
+                    r.stale = r.hist = 0.0
+                    r.has_sandbox = False
+                else:
+                    r.stale += s.cmd_s
+                    r.hist += s.cmd_s
                 r.i += 1
                 push(now + lat, r)
                 gate_after(r, s, now + lat)
                 continue
-            if fe is not None and policy.hold_cost:
+            # an execution of this key is in flight (it may time out and insert nothing)
+            pend = min((x for x in inflight.get(s.key, ()) if x > now), default=None) if s.key else None
+            if pend is not None and policy.hold_cost:
                 limit = _local_cost(r, s, now, sandbox, svc, lock_free)
                 if policy.hold_tau > 0:  # hold:cost+hold:<tau>: both limits apply
                     limit = min(limit, policy.hold_tau)
-                if fe - now <= limit:
-                    r.wait_acc = fe - now
-                    push(fe, r)
+                if pend - now <= limit:
+                    r.wait_acc += pend - now
+                    push(pend, r)
                     continue
-            elif fe is not None and r.waited_i != r.i:
-                remaining = fe - now
+            elif pend is not None and r.waited_i != r.i:
+                remaining = pend - now
                 if remaining <= policy.hold_tau:
-                    r.wait_acc = remaining
-                    push(fe, r)
+                    r.wait_acc += remaining
+                    push(pend, r)
                     continue
                 if policy.hold_tau > 0:
-                    r.wait_acc = policy.hold_tau
+                    r.wait_acc += policy.hold_tau
                     r.waited_i = r.i  # give up after tau
                     push(now + policy.hold_tau, r)
                     continue
@@ -288,10 +299,14 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
             end = now + sbx + replay + s.cmd_s
             if s.cacheable:
                 fill_end[s.key] = min(fill_end.get(s.key, math.inf), end - s.fill_lead)
+            if s.key:
+                inflight.setdefault(s.key, []).append(end - s.fill_lead if s.cacheable else end)
             _record(res, si, r, s, now - r.wait_acc, end, outcome, r.wait_acc, s.cmd_s, sbx, replay)
             if s.error:  # the executor closes the sandbox; a new one must replay the history
                 r.has_sandbox = False
                 r.stale = r.hist
+            elif s.snap:  # a snapshot of this state exists: nothing before it is ever re-run
+                r.hist = 0.0
             else:
                 r.hist += s.cmd_s
             r.wait_acc = 0.0

@@ -23,12 +23,19 @@ start requests, anchored on the logged ready times, with the uncontended start
 time per start. flock is not FIFO, so the result is capped to leave the test at
 least the 10th-percentile cold test time.
 
-TVCache keeps no snapshots in these runs (no ``fork`` events), so an execution
-after a hit re-runs the hit calls on the sandbox first (``source=fresh,
-executed>1``; only two such calls in the traces). Those replay seconds are taken
-out of the segment's ``cmd_s`` here and charged again by the engine whenever the
-simulated rollout is behind. With snapshots (forking from the matched prefix)
-there would be no replay; the replay cost is specific to these runs.
+TVCache snapshots adaptively (``adaptive_snapshots=True`` in the agent loop):
+only expensive calls get one. ``tvcache_dump.json`` lists them (nodes with a
+``sandbox_id``); without a dump (cache-off traces), a call is assumed
+snapshotted if its command takes >= ``SNAPSHOT_MIN_S``, which misses none of
+the dumped snapshots in the TB runs but over-includes a few. After a hit on a
+snapshotted key, the next execution forks from the snapshot (a new sandbox
+start through the lock) and re-runs only the hits after it. After a hit on a
+key without one, the next execution re-runs the hit calls on the sandbox first
+(``source=fresh, executed>1``; two such calls in the traces). Those replay
+seconds are taken out of the segment's ``cmd_s`` here and charged again by the
+engine whenever the simulated rollout is behind. A snapshotted call's own
+``cmd_s`` still includes taking the snapshot (about 5-8 s on the few keys seen
+in both cache-on and cache-off runs).
 
 Assumption: after an uncacheable call (a timeout, not inserted), the rest of the
 rollout, its test included, is uncacheable too. One trace case (tb-medium,
@@ -40,7 +47,10 @@ Rollouts are grouped into training steps by gaps in ``rollout_start`` times
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import os
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -48,6 +58,7 @@ from typing import Optional
 
 from rsched.timeline import load_events
 
+SNAPSHOT_MIN_S = 2.5  # cache-off fallback: commands at least this long are assumed snapshotted
 TRACE_HIT_S = 1.0  # a recorded test call faster than this was served from the cache
 TEST_FILL_LEAD_S = 0.5  # a test result is inserted before the sandbox is stopped (trace: up to 0.43 s before t_end)
 
@@ -61,6 +72,7 @@ class Seg:
     cacheable: bool = False
     timed_out: bool = False
     error: bool = False  # the call raised: the executor closes the sandbox
+    snap: bool = False  # tool: TVCache keeps a snapshot of the sandbox after this call
     fill_lead: float = 0.0  # the result is visible to others this long before the call ends
     seq: int = 0  # tool: position in rollout (1-based); score: 0
     trace_hit: bool = False
@@ -105,6 +117,27 @@ def _median(xs, default):
     return statistics.median(xs) if xs else default
 
 
+def _snapshot_keys(path: str) -> Optional[set]:
+    """Timeline keys of calls TVCache kept a snapshot for, from the end-of-run cache dump."""
+    dump = os.path.join(path.rstrip("/").removesuffix("/timeline"), "tvcache_dump.json")
+    if not os.path.exists(dump):
+        return None
+    with open(dump) as fh:
+        tree = json.load(fh)
+    keys: set = set()
+
+    def walk(task: str, node: dict, prefix: list) -> None:
+        for ser, child in node.get("children", {}).items():
+            p = prefix + [ser]  # terminal calls all mutate state, so the key path is the full chain
+            if child.get("sandbox_id"):
+                keys.add(hashlib.sha1(json.dumps([task, p]).encode()).hexdigest()[:16])
+            walk(task, child, p)
+
+    for task, t in tree.items():
+        walk(task, t.get("root", {}), [])
+    return keys
+
+
 def load_run(
     path: str,
     step_gap: float = 5.0,
@@ -112,6 +145,7 @@ def load_run(
     hit_latency: Optional[float] = None,
 ) -> Run:
     events = load_events(f"{path}/timeline" if not path.rstrip("/").endswith("timeline") else path)
+    snap_keys = _snapshot_keys(path)
     by_r: dict[str, list[dict]] = defaultdict(list)
     for e in events:
         if "rollout" in e:
@@ -185,13 +219,15 @@ def load_run(
 
     def replay_before(r: str, upto_seq: float) -> float:
         """Trace seconds spent re-running hit calls before the execution at ``upto_seq``."""
-        tot = hist = 0.0  # owed replay; all successful history so far
+        tot = hist = 0.0  # owed replay; successful history since the last snapshot
         for e in tool_evs[r]:
             if e["seq"] >= upto_seq:
                 break
             m = _median(cmd_by_key.get(e["key"], []), run_cmd)
             if e.get("error") is not None:  # the sandbox is closed: a new one replays everything
                 tot = hist
+            elif is_snap(e["key"]):  # forked from (or took) a snapshot: nothing before it is re-run
+                tot = hist = 0.0
             elif e["hit"]:  # hits since the last execution are re-run
                 tot += m
                 hist += m
@@ -199,6 +235,11 @@ def load_run(
                 tot = 0.0
                 hist += m
         return tot
+
+    def is_snap(key: str) -> bool:
+        if snap_keys is not None:
+            return key in snap_keys
+        return _median(cmd_by_key.get(key, []), 0.0) >= SNAPSHOT_MIN_S
 
     def broken_from(r: str) -> float:
         """seq of the first uncacheable call (a timeout); later calls and the test are not cached.
@@ -274,6 +315,7 @@ def load_run(
                         error=e.get("error") is not None,
                         seq=e["seq"],
                         trace_hit=bool(e["hit"]),
+                        snap=(e["key"] in snap_keys) if snap_keys is not None else cmd >= SNAPSHOT_MIN_S,
                     )
                 )
             else:  # score
