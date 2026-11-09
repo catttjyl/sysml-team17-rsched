@@ -13,9 +13,16 @@ Model
       ``hold_tau`` seconds. If it finishes in time: hit. If not, the rollout
       gives up after ``hold_tau`` and executes (the wait is wasted)
     - otherwise                           -> execute
-* An execution costs ``cmd_s`` plus the rollout's ``sandbox_s`` if the rollout
-  has no live sandbox yet. Hits never start a sandbox, so a rollout whose
-  first call hits pays sandbox start on its next executed call or its test.
+* An execution costs ``cmd_s``, plus a sandbox start if the rollout has none
+  yet, plus re-running any calls it hit since its sandbox was last brought up
+  to date (no snapshots in these runs, so a miss after a hit replays them).
+* Sandbox starts (``sandbox="queue"``, the default) go through one FIFO lock
+  shared by the whole run, as ``flock`` does on the node: each start holds it
+  for ``run.sandbox_svc`` seconds. ``sandbox="fixed"`` instead charges each
+  rollout its recorded start time wherever it starts (exact trace replay).
+  Hits never start a sandbox; a rollout whose calls and test all hit has none.
+* A finished execution is visible ``fill_lead`` seconds before its end (a test
+  result is inserted before the sandbox is stopped).
 * Hits return the recorded output, so later turns are unchanged.
 
 Policies
@@ -23,7 +30,8 @@ Policies
 ``default``          never wait (what veRL does today)
 ``hold:<tau>``       bounded delay: wait up to tau s for an in-flight filler
 ``scout:<tau>``      one scout per group starts first; its siblings start when the
-                     scout's first cacheable call finishes, or after tau s
+                     scout's first cacheable call (tool or test) finishes, or tau s
+                     after they were ready, whichever is first
 ``scout:<a>+hold:<b>`` both
 """
 
@@ -71,12 +79,14 @@ class CallRec:
     key: str
     t_issue: float
     t_end: float
-    outcome: str  # hit | held_hit | cold | timing (filler in flight, did not wait long enough)
+    outcome: str  # hit | held_hit | cold | timing (filler in flight, did not wait long enough) | uncacheable
     wait_s: float
     cmd_s: float  # executed command seconds (0 on hits)
-    sandbox_s: float  # sandbox start paid by this call
+    sandbox_s: float  # sandbox start paid by this call (queue wait + start)
+    replay_s: float  # re-running earlier hit calls before this one
     timed_out: bool
     trace_hit: bool
+    cacheable: bool
 
 
 @dataclass
@@ -99,7 +109,8 @@ class SimResult:
 
 
 class _R:
-    __slots__ = ("ro", "i", "has_sandbox", "waited_i", "wait_acc", "started", "t_start", "gens", "done", "t_ready")
+    __slots__ = ("ro", "i", "has_sandbox", "waited_i", "wait_acc", "started", "t_start", "gens", "done", "t_ready",
+                 "stale")
 
     def __init__(self, ro: Rollout):
         self.ro = ro
@@ -112,12 +123,15 @@ class _R:
         self.gens: list[tuple[float, float]] = []
         self.done = 0.0
         self.t_ready = 0.0  # when the rollout would have started without gating
+        self.stale = 0.0  # command seconds of hit calls not yet applied to the sandbox
 
 
-def simulate(run: Run, policy: Policy) -> SimResult:
+def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
+    if sandbox not in ("queue", "fixed"):
+        raise ValueError(f"sandbox must be 'queue' or 'fixed', not {sandbox!r}")
     res = SimResult(run, policy)
-    fill_end: dict[str, float] = {}  # key -> earliest completion among started executions
-    lat = run.hit_latency
+    fill_end: dict[str, float] = {}  # key -> earliest time a started execution's result is visible
+    lock_free = -math.inf  # sandbox start lock, shared across steps
     t = 0.0
     for si, step in enumerate(run.steps):
         t0 = t
@@ -143,12 +157,17 @@ def simulate(run: Run, policy: Policy) -> SimResult:
             push(r.t_ready, r, "start")
 
         def open_gate(uid: str, now: float) -> None:
-            if uid in gate_open and gate_open[uid] is None:
+            if gate_open.get(uid, 0.0) is None:
                 gate_open[uid] = now
                 for w in waiters[uid]:
                     if not w.started:
                         begin(w, max(now, w.t_ready))
                 waiters[uid] = []
+
+        def gate_after(r: _R, s, when: float) -> None:
+            """The scout's first cacheable call opens its group's gate when it finishes."""
+            if s.cacheable and scout_of.get(r.ro.uid) is r and gate_open[r.ro.uid] is None:
+                push(when, r, "gate_open")
 
         def begin(r: _R, now: float) -> None:
             r.started = True
@@ -157,6 +176,9 @@ def simulate(run: Run, policy: Policy) -> SimResult:
 
         while heap:
             now, _, tag, r = heapq.heappop(heap)
+            if tag == "gate_open":
+                open_gate(r.ro.uid, now)
+                continue
             if tag in ("start", "gate_timeout"):
                 if r.started:
                     continue
@@ -177,22 +199,24 @@ def simulate(run: Run, policy: Policy) -> SimResult:
                     open_gate(r.ro.uid, now)
                 continue
             s = segs[r.i]
-            if s.kind in ("gen", "gap") or (s.kind == "score" and not s.cacheable):
+            if s.kind in ("gen", "gap") or (s.kind == "score" and s.key is None):  # SQL scoring: not a cache call
                 if s.kind == "gen":
                     r.gens.append((now, now + s.dur))
                 r.i += 1
                 push(now + s.dur, r)
                 continue
 
-            # cacheable tool call or test
+            # tool call or test
             fe = fill_end.get(s.key) if s.cacheable else None
             if fe is not None and fe <= now:
+                lat = run.test_hit_latency if s.kind == "score" else run.hit_latency
                 outcome = "hit" if r.wait_acc == 0.0 else "held_hit"
-                _record(res, si, r, s, now - r.wait_acc, now + lat, outcome, r.wait_acc, 0.0, 0.0)
+                _record(res, si, r, s, now - r.wait_acc, now + lat, outcome, r.wait_acc, 0.0, 0.0, 0.0)
                 r.wait_acc = 0.0
+                r.stale += s.cmd_s
                 r.i += 1
                 push(now + lat, r)
-                _after_cacheable(r, now + lat, scout_of, open_gate)
+                gate_after(r, s, now + lat)
                 continue
             if fe is not None and r.waited_i != r.i:
                 remaining = fe - now
@@ -206,17 +230,25 @@ def simulate(run: Run, policy: Policy) -> SimResult:
                     push(now + policy.hold_tau, r)
                     continue
             # execute
-            outcome = "timing" if fe is not None else "cold"
-            sbx = 0.0 if r.has_sandbox else r.ro.sandbox_s
-            r.has_sandbox = True
-            end = now + sbx + s.cmd_s
+            outcome = "timing" if fe is not None else ("cold" if s.cacheable else "uncacheable")
+            sbx = 0.0
+            if not r.has_sandbox:
+                if sandbox == "queue":
+                    ready = max(now, lock_free) + run.sandbox_svc
+                    lock_free = ready
+                    sbx = ready - now
+                else:
+                    sbx = r.ro.sandbox_s
+                r.has_sandbox = True
+            replay, r.stale = r.stale, 0.0
+            end = now + sbx + replay + s.cmd_s
             if s.cacheable:
-                fill_end[s.key] = min(fill_end.get(s.key, math.inf), end)
-            _record(res, si, r, s, now - r.wait_acc, end, outcome, r.wait_acc, s.cmd_s, sbx)
+                fill_end[s.key] = min(fill_end.get(s.key, math.inf), end - s.fill_lead)
+            _record(res, si, r, s, now - r.wait_acc, end, outcome, r.wait_acc, s.cmd_s, sbx, replay)
             r.wait_acc = 0.0
             r.i += 1
             push(end, r)
-            _after_cacheable(r, end, scout_of, open_gate)
+            gate_after(r, s, end)
 
         ends = [r.done for r in rs]
         t_last = max(ends)
@@ -229,15 +261,10 @@ def simulate(run: Run, policy: Policy) -> SimResult:
     return res
 
 
-def _after_cacheable(r: _R, when: float, scout_of, open_gate) -> None:
-    if scout_of.get(r.ro.uid) is r:
-        open_gate(r.ro.uid, when)
-
-
-def _record(res, si, r, s, t_issue, t_end, outcome, wait, cmd, sbx) -> None:
+def _record(res, si, r, s, t_issue, t_end, outcome, wait, cmd, sbx, replay) -> None:
     res.calls.append(
         CallRec(si, r.ro.id, r.ro.uid, s.kind, s.seq, s.key, t_issue, t_end, outcome, wait,
-                cmd, sbx, s.timed_out and cmd > 0, s.trace_hit)
+                cmd, sbx, replay, s.timed_out and cmd > 0, s.trace_hit, s.cacheable)
     )
 
 

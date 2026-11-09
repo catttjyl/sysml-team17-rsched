@@ -208,20 +208,36 @@ Add `CACHE=off` for the baseline. Plot the results the same way as for SQL, with
 
 ```bash
 python scripts/simulate.py results/tbench_full_b4n8/tb-easy_cache-on \
-  --policies default hold:10 hold:inf scout:30 scout:30+hold:inf [--json out.json]
+  --policies default hold:10 hold:inf scout:30 scout:30+hold:inf [--sandbox queue|fixed] [--json out.json]
+python scripts/validate_sim.py   # in-sample replay and cache-off -> cache-on prediction
 ```
 
-- `default`: never wait (veRL today). Replaying a cache-on run with it reproduces the recorded hits, timing misses and step makespan.
+- `default`: never wait (veRL today).
 - `hold:<tau>`: bounded delay. A call whose key is being filled by another rollout waits up to `tau` s. If the fill is not done by then, the call executes anyway, and the wait is wasted.
-- `scout:<tau>`: one scout per prompt starts first. Its siblings start when the scout's first cached call finishes, or after `tau` s.
+- `scout:<tau>`: one scout per prompt starts first. Its siblings start when the scout's first cacheable call (tool or test) finishes, or `tau` s after they were ready, whichever comes first.
 
 Model notes:
 
-- **Sandbox start is not tool time.** In the trace it is inside `t_end - t_start` of a rollout's first executed call. The simulator removes it from the call and charges it to whichever call first needs a live sandbox. A rollout whose first call hits pays it on its next executed call or on its test. Scheduling can move this cost but not remove it, so it is reported in its own column.
-- **The Terminal-Bench test is a cached call too.** `executor.test(history)` is keyed by the full history. Siblings with the same history share it, including all rollouts that made no tool call. It is reported as "test hit rate".
-- Generation times are fixed from the trace. There is no GPU contention model, so holding a rollout does not speed up the others' generation. "gen-busy" is the share of step time with at least one generation running.
+- **Sandbox start is not tool time, and most of it is queueing.** In the trace it is inside `t_end - t_start` of a rollout's first executed call. `podman run` runs under one node-wide `flock` (`terminal_podman.py`), and a start holds it for about 1.2 s, so the recorded 16–20 s median is mostly waiting for other rollouts' starts. By default (`--sandbox queue`) the simulator models that lock as one FIFO queue shared by the whole run. `--sandbox fixed` instead charges each rollout its recorded start time wherever it starts. A rollout whose calls and test all hit never starts a sandbox.
+- **The Terminal-Bench test is a cached call too.** `executor.test(history)` is keyed by the full history. Siblings with the same history share it, including all rollouts that made no tool call; those make up most of the test hits that holding adds. Cold tests take about 12 s (median), 37–43 s at p90.
+- **After a hit, a later miss re-runs the hit calls.** These runs keep no snapshots, so the sandbox has to catch up (`source=fresh, executed>1` in the trace). The simulator charges that replay.
+- **Below an uncacheable call (a timeout), nothing is cached**, the test included. This is an assumption backed by one trace case.
+- A test result becomes visible to siblings 0.5 s before the call ends (the sandbox is stopped after the insert).
+- Generation times are fixed from the trace. There is no GPU contention model, so holding a rollout does not speed up the others' generation. "gen-busy" is the share of step time with at least one generation running; it is not an accelerator model.
 - A hit returns the recorded output, so later turns stay the same.
-- If no rollout in a run makes a tool call, the sandbox start cost is unknown and treated as 0.
+- **Bounds.** `reuse bound` = every repeat of a cacheable key hits (calls − distinct keys). It doesn't depend on the policy. `upper_bound` in the JSON is hits + timing misses of one replay.
+- **Report step time per step (median, range), not the mean.** One step with a 600 s command timeout takes 10× the others, so the mean mostly counts timeouts.
+
+Validation (`scripts/validate_sim.py`):
+
+| Check | Tool hits, sim / real | Test hits, sim / real | Median step s, sim / real |
+|---|---|---|---|
+| TB easy cache-on, replay, fixed | 4.9% / 4.9% | 15.6% / 15.6% | 56.2 / 56.2 |
+| TB easy cache-on, replay, queue | 4.9% / 4.9% | 15.3% / 15.6% | 55.8 / 56.2 |
+| TB easy cache-off → cache-on, queue | 3.8% / 4.9% | 11.7% / 15.6% | 50.8 / 56.2 |
+| TB medium cache-off → cache-on, queue | 0.2% / 0.0% | 3.4% / 3.3% | 69.8 / 79.3 |
+
+The cache-off → cache-on rows predict the cache-on run from a different run with the same tasks. Hit rates carry over. Step time is 10–12% low; that run also sampled more 600 s timeouts.
 
 ## Miss classes (draft definition from the proposal)
 
