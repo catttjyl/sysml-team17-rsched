@@ -1,7 +1,7 @@
 # Poster figures
 
 fig1, fig2, fig3 and fig5 use the full runs in `results/sql_full_b4n8` and `results/tbench_full_b4n8` (20 GRPO steps, 4 prompts × 8 rollouts). fig4 and fig5_siblings_sql_prefix use `results/sql_full_n16`, the only runs from before the TVCache fix. Tool time counts command execution only; sandbox (container) start is left out.
-Regenerate them with `python scripts/plot_poster.py`. Each figure is saved as PNG (300 dpi).
+Regenerate them with `python scripts/plot_poster.py`; fig6 comes from the simulator and is regenerated with `python scripts/plot_sim.py`. Each figure is saved as PNG (300 dpi).
 The colors mean the same thing in every figure: blue is a hit, orange is a timing miss, and gray is a cold miss.
 
 | Figure | What it shows | How to read it |
@@ -12,3 +12,4 @@ The colors mean the same thing in every figure: blue is a hit, orange is a timin
 | `fig4_tcp_nodelay_fix` | Median cold-call time and the number of timing misses on SkyRL-SQL: before the fix, after it, and with the cache off. | Adding TCP_NODELAY to TVCache cut each call from 88 ms to 2 ms. The slow calls had also inflated timing misses (7 before the fix, 1 after). |
 | `fig5_siblings_sql` / `fig5_siblings_terminal` | One real GRPO group over time: generation, sandbox start, the first copy of a shared call, timing misses, other cold misses, and hits. Full runs, 8 siblings per prompt. | On Terminal-Bench, 7 of 8 siblings issue the same first call while its first copy is still running, so they all miss. On SQL, calls take about 2 ms, so this almost never happens: the whole run has 1 timing miss. |
 | `fig5_siblings_sql_prefix` | The same kind of plot for SkyRL-SQL before the TVCache fix, 16 siblings per prompt (`results/sql_full_n16`). | 4 siblings miss on the same first call. Before the fix each call took about 88 ms instead of 2 ms, which made these collisions more likely. |
+| `fig6_sim_policies` / `fig6_sim_policies_column` | Simulated policies on the full Terminal-Bench cache-on runs: tool and reward-test hit rate (dashed: reuse bound, every repeated call hits) and total time against default. Bars use the sandbox-lock queue model; diamonds use the recorded sandbox start times. The column version, sized for one poster column, shows default and the two holds. | A 10 s hold gets most of the reuse (tool hits 4.9 → 10.2% on easy, 0 → 5.1% on medium). Its time effect is within ±2% here and inside the model's error. See the Simulator section of the main README. |
