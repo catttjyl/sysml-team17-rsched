@@ -12,8 +12,8 @@ Sandbox start is *not* part of a tool segment's cost. In the trace it is folded
 into ``t_end - t_start`` of the rollout's first executed call (``sandbox_start_s``),
 or into the test of a rollout with no executed call. Starts are serialised by a
 node-wide ``flock`` (``terminal_podman.py``), so most of that time is queueing:
-each start holds the lock for ``Run.sandbox_svc`` (about 1.2 s) and the rest is
-waiting for the other rollouts' starts. The engine models that queue; the
+an uncontended start takes about 1.2 s and the rest is waiting for the other
+rollouts' starts. ``Run.sandbox_svc`` is calibrated by the engine. The engine models that queue; the
 recorded per-rollout time (``Rollout.sandbox_s``) is kept for the ``fixed``
 sensitivity mode. A rollout whose calls and test all hit never starts one.
 
@@ -56,6 +56,7 @@ class Seg:
     cmd_s: float = 0.0  # tool / score: execution time, sandbox start excluded
     cacheable: bool = False
     timed_out: bool = False
+    error: bool = False  # the call raised: the executor closes the sandbox
     fill_lead: float = 0.0  # the result is visible to others this long before the call ends
     seq: int = 0  # tool: position in rollout (1-based); score: 0
     trace_hit: bool = False
@@ -87,8 +88,11 @@ class Run:
     cache: str
     steps: list[Step]
     hit_latency: float
-    test_hit_latency: float = 0.5
-    sandbox_svc: float = 1.2  # seconds one sandbox start holds the start lock
+    test_hit_latency: float = 0.5  # test hit in a rollout with a live sandbox (it is stopped too)
+    test_hit_latency_cold: float = 0.0  # test hit in a rollout that never started one
+    sandbox_svc: Optional[float] = None  # lock seconds per start; None: calibrate (engine.lock_service)
+    has_lock: bool = False  # the trace has podman sandbox starts behind the start lock
+    lone_svc: float = 1.2  # median uncontended start, for reference
     train_gaps: list[float] = field(default_factory=list)  # trace time between step i end and step i+1 start
 
 
@@ -124,7 +128,8 @@ def load_run(
     cmd_by_key: dict[str, list[float]] = defaultdict(list)
     sandbox_by_task: dict[str, list[float]] = defaultdict(list)
     for e, s in zip(tools, sb):
-        if not e["hit"]:
+        # executed>1: the call also re-ran earlier hits; keep only clean single executions here
+        if not e["hit"] and (e.get("executed") or 1) <= 1:
             cmd_by_key[e["key"]].append(max(0.0, e["t_end"] - e["t_start"] - s))
         if s:
             sandbox_by_task[e["task"]].append(s)
@@ -167,13 +172,16 @@ def load_run(
         for e in tool_evs[r]:
             if e["seq"] >= upto_seq:
                 break
-            # hits since the last execution are re-run; an execution brings the sandbox up to date
-            tot = tot + _median(cmd_by_key.get(e["key"], []), run_cmd) if e["hit"] else 0.0
+            if e["hit"]:  # hits since the last execution are re-run
+                tot += _median(cmd_by_key.get(e["key"], []), run_cmd)
+            else:  # an execution brings the sandbox up to date
+                tot = 0.0
         return tot
 
     def broken_from(r: str) -> float:
-        """seq of the first uncacheable call; later calls and the test are not cached."""
-        return next((e["seq"] for e in tool_evs[r] if e.get("error") is not None or e.get("uncacheable")), math.inf)
+        """seq of the first uncacheable call (a timeout); later calls and the test are not cached.
+        A call that raised is dropped from the history instead, so it doesn't break the chain."""
+        return next((e["seq"] for e in tool_evs[r] if e.get("uncacheable")), math.inf)
 
     # --- test (score) calls: key and execution time without sandbox start
     test_s_by_key: dict[str, list[float]] = defaultdict(list)
@@ -200,8 +208,13 @@ def load_run(
             test_s_by_key[key].append(t)
             test_s_by_task[task].append(t)
     run_test = _median([x for v in test_s_by_task.values() for x in v], 0.0)
-    test_hits = [score_ev[r]["t_end"] - score_ev[r]["t_start"] for r in test_info if test_info[r][1]]
-    test_hit_latency = _median(test_hits, 0.5)
+    # a test hit in a rollout with a live sandbox also stops it (~0.5 s); without one it is ~0
+    live = {r for r in test_info if any(not e["hit"] for e in tool_evs[r])}
+    test_hits = {r: score_ev[r]["t_end"] - score_ev[r]["t_start"] for r in test_info if test_info[r][1]}
+    test_hit_latency = _median([v for r, v in test_hits.items() if r in live], 0.5)
+    test_hit_latency_cold = _median([v for r, v in test_hits.items() if r not in live], 0.0)
+    if cache == "off":  # a cache-off trace has no hits to measure; use what cache-on runs show
+        test_hit_latency, test_hit_latency_cold = 0.5, 0.0
 
     # --- rollouts -> segments
     rollouts = []
@@ -234,7 +247,8 @@ def load_run(
                         key=e["key"],
                         cmd_s=cmd,
                         cacheable=e["seq"] < broken_from(r) and e.get("error") is None and not e.get("uncacheable"),
-                        timed_out=cmd >= cmd_timeout - 1.0,
+                        timed_out=bool(e.get("uncacheable")) or cmd >= cmd_timeout - 1.0,
+                        error=e.get("error") is not None,
                         seq=e["seq"],
                         trace_hit=bool(e["hit"]),
                     )
@@ -274,4 +288,5 @@ def load_run(
         s.t_end = max(s.t_end, t1)
         prev = t0
     gaps = [max(0.0, b.t0 - a.t_end) for a, b in zip(steps, steps[1:])]
-    return Run(path, workload, cache, steps, hit_latency, test_hit_latency, svc, gaps)
+    return Run(path, workload, cache, steps, hit_latency, test_hit_latency, test_hit_latency_cold,
+               None if known else 0.0, bool(known), svc, gaps)

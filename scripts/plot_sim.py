@@ -6,8 +6,10 @@ Replays the cache-on traces in results/tbench_full_b4n8 with rsched.sim under
 each policy and writes fig6_sim_policies.{png,pdf} and the one-column
 fig6_sim_policies_column.{png,pdf}. Same colors and fonts as
 scripts/plot_poster.py. The dashed line is the reuse bound (every repeat of a
-key hits). Step time is the change per step against default, under the
-sandbox-lock queue model: bar = median step, whisker = 10th-90th percentile.
+key hits, which hold:inf reaches by construction). Step time is the change per
+step against default: bar = median step and whisker = 10th-90th percentile under
+the sandbox-lock queue model; the black diamond is the median under the
+recorded (fixed) sandbox times, which neither model validates off-policy.
 """
 
 from __future__ import annotations
@@ -49,12 +51,16 @@ def step_change(rows: list[dict]) -> list[tuple[float, float, float]]:
     return out
 
 
-def load(policies) -> dict:
+def load(policies, sandbox="queue") -> dict:
     data = {}
     for folder, label in RUNS:
         run = load_run(str(ROOT / "results" / "tbench_full_b4n8" / folder))
-        data[label] = [summarize(simulate(run, Policy.parse(p))) for p in policies]
+        data[label] = [summarize(simulate(run, Policy.parse(p), sandbox=sandbox)) for p in policies]
     return data
+
+
+def fixed_medians(data_fixed: dict) -> dict:
+    return {k: [m for m, _, _ in step_change(v)] for k, v in data_fixed.items()}
 
 
 def main() -> None:
@@ -65,6 +71,7 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     data = load([p for p, _ in POLICIES])
+    fixed = fixed_medians(load([p for p, _ in POLICIES], "fixed"))
 
     fig, axes = plt.subplots(1, 3, figsize=(17, 5.4), gridspec_kw={"wspace": 0.28})
     x = range(len(POLICIES))
@@ -103,15 +110,19 @@ def main() -> None:
             r["_dmk"] = med
     bars(axes[2], lambda r: r["_dmk"], "Step time vs. default", "per-step change (median, p10–p90)",
          pct=False, fmt="{:+.0%}", err=step_change)
+    for j, label in enumerate(data):
+        axes[2].scatter([i + (j - 0.5) * w for i in x], fixed[label], marker="D", s=28, color=INK2, zorder=5)
     axes[2].axhline(0, color=INK2, lw=0.8)
     for ax in axes[:2]:
         ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
     axes[2].yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
-    handles = [Patch(color=HIT), Patch(color=LIGHT), Line2D([], [], color=INK2, ls=(0, (4, 3)))]
-    fig.legend(handles, ["TB easy", "TB medium", "reuse bound (every repeated key hits)"],
-               ncol=3, loc="lower center", bbox_to_anchor=(0.5, -0.1), fontsize=13)
+    handles = [Patch(color=HIT), Patch(color=LIGHT), Line2D([], [], color=INK2, ls=(0, (4, 3))),
+               Line2D([], [], color=INK2, marker="D", ls="")]
+    fig.legend(handles, ["TB easy", "TB medium", "reuse bound (every repeated key hits)",
+                         "median step, recorded sandbox times"],
+               ncol=4, loc="lower center", bbox_to_anchor=(0.5, -0.1), fontsize=13)
     fig.suptitle("Holding a sibling until the in-flight call is filled turns every timing miss into a hit",
                  x=0.01, ha="left", fontsize=17, fontweight="bold", y=1.06)
     fig.text(0.01, 0.98, "Simulated on the full Terminal-Bench traces (Qwen2.5-1.5B, 4 prompts × 8 rollouts × 20 steps, "
@@ -126,6 +137,7 @@ def column_figure(out: Path) -> None:
     """Narrow version for one 8.2-inch poster column, drawn at print size (fonts are real points)."""
     pols = [("default", "default"), ("hold:inf", "hold"), ("scout:30", "scout")]
     data = load([p for p, _ in pols])
+    fixed = fixed_medians(load([p for p, _ in pols], "fixed"))
     with plt.rc_context({"font.size": 17, "axes.titlesize": 20, "xtick.labelsize": 16, "ytick.labelsize": 15,
                          "axes.labelsize": 16, "legend.fontsize": 16}):
         fig, axes = plt.subplots(1, 2, figsize=(8.2, 4.3), gridspec_kw={"wspace": 0.42})
@@ -146,6 +158,7 @@ def column_figure(out: Path) -> None:
                     ax.bar(xs, vals, w, color=colors[j], label=label, yerr=[lo, hi], ecolor=INK2, capsize=3,
                            error_kw={"lw": 1.2})
                     ax.axhline(0, color=INK2, lw=0.8)
+                    ax.scatter(xs, fixed[label], marker="D", s=36, color=INK2, zorder=5)
                     continue
                 ax.bar(xs, vals, w, color=colors[j], label=label)
                 ax.hlines(rows[0]["tool"]["reuse_bound"], -0.5, len(pols) - 0.5, colors=colors[j],
@@ -161,9 +174,10 @@ def column_figure(out: Path) -> None:
             ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
         from matplotlib.lines import Line2D
         from matplotlib.patches import Patch
-        fig.legend([Patch(color=HIT), Patch(color=LIGHT), Line2D([], [], color=INK2, ls=(0, (4, 3)), lw=2)],
-                   ["TB easy", "TB medium", "reuse bound"], ncol=3, loc="lower center",
-                   bbox_to_anchor=(0.5, -0.13), handlelength=1.6, columnspacing=1.2)
+        fig.legend([Patch(color=HIT), Patch(color=LIGHT), Line2D([], [], color=INK2, ls=(0, (4, 3)), lw=2),
+                    Line2D([], [], color=INK2, marker="D", ls="")],
+                   ["TB easy", "TB medium", "reuse bound", "recorded sandbox times"], ncol=2, loc="lower center",
+                   bbox_to_anchor=(0.5, -0.25), handlelength=1.6, columnspacing=1.2)
         for ext in ("png", "pdf"):
             fig.savefig(out / f"fig6_sim_policies_column.{ext}", bbox_inches="tight")
     print(f"wrote {out}/fig6_sim_policies_column.png")

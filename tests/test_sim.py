@@ -87,7 +87,7 @@ def test_bounded_hold_gives_up(siblings):
 
 
 def test_scout_delays_siblings(siblings):
-    res = simulate(load_run(siblings), Policy.parse("scout:inf"))
+    res = simulate(load_run(siblings), Policy.parse("scout:inf"), sandbox="fixed")
     b0 = next(c for c in res.calls if c.rollout == "B")
     assert b0.outcome == "hit"  # started after A's first call finished
     assert summarize(res)["scout_delay_s"] == pytest.approx(19.0, abs=0.01)
@@ -178,3 +178,46 @@ def test_reuse_bound_is_policy_independent(siblings):
     run = load_run(siblings)
     bounds = [summarize(simulate(run, Policy.parse(p)))["tool"]["reuse_bound"] for p in ("default", "hold:inf", "scout:inf")]
     assert bounds == pytest.approx([1 / 3] * 3)
+
+
+def test_no_lock_without_podman_starts(tmp_path):
+    """A trace with no sandbox starts (SQL, local toy runs) gets no start lock in queue mode."""
+    a = [("gen", 0, 1, {}), ("tool", 1, 1 + CMD, _tool("k1", 1, sandbox=None)), ("score", 3, 3 + TEST, {})]
+    b = [("gen", 0, 1, {}), ("tool", 1, 1 + CMD, _tool("k2", 1, sandbox=None)), ("score", 3, 3 + TEST, {})]
+    run = load_run(_write(tmp_path, [("A", a), ("B", b)]))
+    q, f = (summarize(simulate(run, Policy.parse("default"), sandbox=m)) for m in ("queue", "fixed"))
+    assert q["sandbox_s"] == 0.0 and q["makespan_mean"] == pytest.approx(f["makespan_mean"])
+
+
+def test_queue_calibrated_to_trace_total(siblings):
+    run = load_run(siblings)
+    f = summarize(simulate(run, Policy.parse("default"), sandbox="fixed"))
+    q = summarize(simulate(run, Policy.parse("default")))
+    assert q["sandbox_s"] == pytest.approx(f["sandbox_s"], rel=1e-3)
+
+
+def test_hold_cost_compares_wait_with_local_cost(tmp_path):
+    """hold:cost waits only while the fill is nearer than B finishing the call itself."""
+    a = [("gen", 0, 1, {}), ("tool", 1, 1 + SB + 100, _tool("k1", 1)), ("score", 117, 117 + TEST, {})]
+    b = [("gen", 0, 2, {}), ("tool", 2, 2 + SB + 100, _tool("k1", 1)), ("score", 118, 118 + TEST, {})]
+    run = load_run(_write(tmp_path, [("A", a), ("B", b)]))
+    inf = summarize(simulate(run, Policy.parse("hold:inf"), sandbox="fixed"))
+    cost = summarize(simulate(run, Policy.parse("hold:cost"), sandbox="fixed"))
+    # B issues at 2; A's fill lands at 117 (115 s away). Locally: 16 + 100 = 116 s, so waiting is cheaper
+    assert inf["tool"]["held_hits"] == 1
+    assert cost["tool"]["held_hits"] == 1
+    run.steps[0].rollouts[1].sandbox_s = 0.0  # no start to pay: 100 s locally beats a 115 s wait
+    assert summarize(simulate(run, Policy.parse("hold:cost"), sandbox="fixed"))["tool"]["held_hits"] == 0
+
+
+def test_hold_cost_executes_when_cheaper(tmp_path):
+    """The fill is 100 s away; B could run the 2 s command on its live sandbox: it executes."""
+    a = [("gen", 0, 1, {}), ("tool", 1, 1 + SB + 100, _tool("k1", 1)), ("score", 117, 117 + TEST, {})]
+    b = [("gen", 0, 1, {}), ("tool", 1, 1 + SB + CMD, _tool("k0", 1)), ("gen", 19, 20, {}),
+         ("tool", 20, 20 + 100, _tool("k1", 2, sandbox=None)), ("score", 120, 120 + TEST, {})]
+    run = load_run(_write(tmp_path, [("A", a), ("B", b)]))
+    for seg in run.steps[0].rollouts[1].segs:  # B's k1 under its own prefix is the same key as A's here
+        if seg.key == "k1":
+            seg.cmd_s = CMD
+    cost = summarize(simulate(run, Policy.parse("hold:cost"), sandbox="fixed"))
+    assert cost["tool"]["held_hits"] == 0 and cost["tool"]["timing"] == 1

@@ -214,30 +214,36 @@ python scripts/validate_sim.py   # in-sample replay and cache-off -> cache-on pr
 
 - `default`: never wait (veRL today).
 - `hold:<tau>`: bounded delay. A call whose key is being filled by another rollout waits up to `tau` s. If the fill is not done by then, the call executes anyway, and the wait is wasted.
+- `hold:cost`: wait only if the fill will be visible before this rollout could finish the call itself (sandbox start + replay + command). It is an oracle: it knows the call's true command time.
 - `scout:<tau>`: one scout per prompt starts first. Its siblings start when the scout's first cacheable call (tool or test) finishes, or `tau` s after they were ready, whichever comes first.
 
 Model notes:
 
-- **Sandbox start is not tool time, and most of it is queueing.** In the trace it is inside `t_end - t_start` of a rollout's first executed call. `podman run` runs under one node-wide `flock` (`terminal_podman.py`), and a start holds it for about 1.2 s, so the recorded 16–20 s median is mostly waiting for other rollouts' starts. By default (`--sandbox queue`) the simulator models that lock as one FIFO queue shared by the whole run. `--sandbox fixed` instead charges each rollout its recorded start time wherever it starts. A rollout whose calls and test all hit never starts a sandbox.
+- **Sandbox start is not tool time, and most of it is queueing.** In the trace it is inside `t_end - t_start` of a rollout's first executed call. `podman run` runs under one node-wide `flock` (`terminal_podman.py`). An uncontended start takes about 1.2 s, so the recorded 16–20 s median is mostly waiting for other rollouts' starts. By default (`--sandbox queue`) the simulator models that lock as one FIFO queue shared by the whole run. Each start holds it for a time calibrated so that the default replay's total sandbox time equals the trace's: 1.39 s (easy) and 1.57 s (medium), above 1.2 s because some starts are slow. `--sandbox fixed` instead charges each rollout its recorded start time wherever it starts. Runs without podman starts (SQL) have no lock. A rollout whose calls and test all hit never starts a sandbox. A call that raises closes the sandbox, so the next execution starts a new one.
 - **The Terminal-Bench test is a cached call too.** `executor.test(history)` is keyed by the full history. Siblings with the same history share it, including all rollouts that made no tool call; those make up most of the test hits that holding adds. Cold tests take about 12 s (median), 37–43 s at p90.
 - **After a hit, a later miss re-runs the hit calls.** These runs keep no snapshots, so the sandbox has to catch up (`source=fresh, executed>1` in the trace). The simulator charges that replay.
-- **Below an uncacheable call (a timeout), nothing is cached**, the test included. This is an assumption backed by one trace case.
+- **Below an uncacheable call (a timeout), nothing is cached**, the test included. This is an assumption backed by one trace case. A call that raised is dropped from the history instead and doesn't break the chain.
+- A test hit costs about 0.5 s in a rollout with a live sandbox, which is stopped too, and about 0 s otherwise. Both values are measured from the trace.
 - A test result becomes visible to siblings 0.5 s before the call ends (the sandbox is stopped after the insert).
 - Generation times are fixed from the trace. There is no GPU contention model, so holding a rollout does not speed up the others' generation. "gen-busy" is the share of step time with at least one generation running; it is not an accelerator model.
 - A hit returns the recorded output, so later turns stay the same.
-- **Bounds.** `reuse bound` = every repeat of a cacheable key hits (calls − distinct keys). It doesn't depend on the policy. `upper_bound` in the JSON is hits + timing misses of one replay.
-- **Report step time per step (median, range), not the mean.** One step with a 600 s command timeout takes 10× the others, so the mean mostly counts timeouts.
+- **Bounds.** `reuse bound` = every repeat of a cacheable key hits (calls − distinct keys). It doesn't depend on the policy. In these traces every repeat is either a hit or a timing miss, so `hold:inf` reaches the bound **by construction**. The result worth reading is what the waiting costs. `upper_bound` in the JSON is hits + timing misses of one replay.
+- **A hit is not always saved work.** With no snapshots, a rollout that hits and later misses re-runs the hit calls; the cost appears as `replay s`. `hold:cost` decides call by call, so it still pays this later.
+- **Step time:** the CLI gives the per-step change (median, 10th–90th percentile) and the total change. Total time is a paired comparison on the same trace, but a few steps with 600 s timeouts dominate it, and the median hides them. Report both.
+- **Neither sandbox model is validated for non-default schedules.** The queue model's step-time gains come from fewer sandbox starts. The fixed model charges a delayed rollout its recorded queued start, which overstates the cost of delaying it. The figures show both.
+- **No accelerator model.** Batch-by-prompt and priority policies, and the hit-rate vs. accelerator-idle trade-off, need one. Scout can only cost time here, because holding siblings back frees nothing.
 
 Validation (`scripts/validate_sim.py`):
 
 | Check | Tool hits, sim / real | Test hits, sim / real | Median step s, sim / real |
 |---|---|---|---|
 | TB easy cache-on, replay, fixed | 4.9% / 4.9% | 15.6% / 15.6% | 56.2 / 56.2 |
-| TB easy cache-on, replay, queue | 4.9% / 4.9% | 15.3% / 15.6% | 55.8 / 56.2 |
-| TB easy cache-off → cache-on, queue | 3.8% / 4.9% | 11.7% / 15.6% | 50.8 / 56.2 |
-| TB medium cache-off → cache-on, queue | 0.2% / 0.0% | 3.4% / 3.3% | 69.8 / 79.3 |
+| TB easy cache-on, replay, queue | 4.9% / 4.9% | 15.3% / 15.6% | 60.0 / 56.2 |
+| TB medium cache-on, replay, queue | 0.0% / 0.0% | 2.8% / 3.3% | 86.9 / 79.3 |
+| TB easy cache-off → cache-on, queue | 3.8% / 4.9% | 12.0% / 15.6% | 53.1 / 56.2 |
+| TB medium cache-off → cache-on, queue | 0.2% / 0.0% | 3.4% / 3.3% | 69.6 / 79.3 |
 
-The cache-off → cache-on rows predict the cache-on run from a different run with the same tasks. Hit rates carry over. Step time is 10–12% low; that run also sampled more 600 s timeouts.
+The queue model matches the mean step to within 1% in-sample (199.8 vs 198.6 s, 199.4 vs 197.2 s), but its median step runs 7–10% high. The cache-off → cache-on rows predict the cache-on run from a different run with the same tasks, and only for `default`. Hit rates come out the right size but 20–25% low on easy. The median step is 6–12% low. That run sampled different trajectories, including more 600 s timeouts.
 
 ## Miss classes (draft definition from the proposal)
 

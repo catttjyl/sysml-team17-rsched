@@ -18,9 +18,13 @@ Model
   to date (no snapshots in these runs, so a miss after a hit replays them).
 * Sandbox starts (``sandbox="queue"``, the default) go through one FIFO lock
   shared by the whole run, as ``flock`` does on the node: each start holds it
-  for ``run.sandbox_svc`` seconds. ``sandbox="fixed"`` instead charges each
-  rollout its recorded start time wherever it starts (exact trace replay).
+  for ``run.sandbox_svc`` seconds, calibrated so that the default replay's
+  total sandbox time equals the trace's (``lock_service``). ``sandbox="fixed"``
+  instead charges each rollout its recorded start time wherever it starts
+  (exact trace replay). Runs without podman starts (SQL) have no lock.
   Hits never start a sandbox; a rollout whose calls and test all hit has none.
+  A call that raises closes the sandbox (the executor does), so the next
+  execution starts a new one.
 * A finished execution is visible ``fill_lead`` seconds before its end (a test
   result is inserted before the sandbox is stopped).
 * Hits return the recorded output, so later turns are unchanged.
@@ -29,6 +33,9 @@ Policies
 --------
 ``default``          never wait (what veRL does today)
 ``hold:<tau>``       bounded delay: wait up to tau s for an in-flight filler
+``hold:cost``        wait only if the fill will be visible before this rollout could
+                     finish the call itself (sandbox start + replay + command).
+                     An oracle: it uses the call's true command time
 ``scout:<tau>``      one scout per group starts first; its siblings start when the
                      scout's first cacheable call (tool or test) finishes, or tau s
                      after they were ready, whichever is first
@@ -51,12 +58,16 @@ class Policy:
     name: str = "default"
     hold_tau: float = 0.0
     scout_tau: Optional[float] = None
+    hold_cost: bool = False
 
     @classmethod
     def parse(cls, spec: str) -> "Policy":
-        hold, scout = 0.0, None
+        hold, scout, cost = 0.0, None, False
         for part in spec.split("+"):
             kind, _, arg = part.partition(":")
+            if kind == "hold" and arg == "cost":
+                cost = True
+                continue
             val = math.inf if arg in ("", "inf") else float(arg)
             if kind == "default":
                 continue
@@ -66,7 +77,7 @@ class Policy:
                 scout = val
             else:
                 raise ValueError(f"unknown policy {part!r}")
-        return cls(spec, hold, scout)
+        return cls(spec, hold, scout, cost)
 
 
 @dataclass
@@ -126,9 +137,29 @@ class _R:
         self.stale = 0.0  # command seconds of hit calls not yet applied to the sandbox
 
 
+def lock_service(run: Run) -> float:
+    """Seconds each start holds the lock, so that the default replay's sandbox total matches the trace.
+
+    The median uncontended start (~1.2 s) under-predicts the total by 10-23%: some
+    starts are slow (pasta retries, up to ~35 s) and podman slows under load.
+    """
+    if run.sandbox_svc is None:
+        target = sum(c.sandbox_s for c in simulate(run, Policy(), sandbox="fixed").calls)
+        lo, hi = 0.0, 120.0
+        for _ in range(30):
+            run.sandbox_svc = (lo + hi) / 2
+            got = sum(c.sandbox_s for c in simulate(run, Policy()).calls)
+            lo, hi = (run.sandbox_svc, hi) if got < target else (lo, run.sandbox_svc)
+        run.sandbox_svc = (lo + hi) / 2
+    return run.sandbox_svc
+
+
 def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
     if sandbox not in ("queue", "fixed"):
         raise ValueError(f"sandbox must be 'queue' or 'fixed', not {sandbox!r}")
+    if not run.has_lock:
+        sandbox = "fixed"  # no podman starts in this trace: nothing to queue
+    svc = lock_service(run) if sandbox == "queue" else 0.0
     res = SimResult(run, policy)
     fill_end: dict[str, float] = {}  # key -> earliest time a started execution's result is visible
     lock_free = -math.inf  # sandbox start lock, shared across steps
@@ -209,7 +240,10 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
             # tool call or test
             fe = fill_end.get(s.key) if s.cacheable else None
             if fe is not None and fe <= now:
-                lat = run.test_hit_latency if s.kind == "score" else run.hit_latency
+                if s.kind == "score":
+                    lat = run.test_hit_latency if r.has_sandbox else run.test_hit_latency_cold
+                else:
+                    lat = run.hit_latency
                 outcome = "hit" if r.wait_acc == 0.0 else "held_hit"
                 _record(res, si, r, s, now - r.wait_acc, now + lat, outcome, r.wait_acc, 0.0, 0.0, 0.0)
                 r.wait_acc = 0.0
@@ -218,7 +252,12 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
                 push(now + lat, r)
                 gate_after(r, s, now + lat)
                 continue
-            if fe is not None and r.waited_i != r.i:
+            if fe is not None and policy.hold_cost:
+                if fe - now <= _local_cost(r, s, now, sandbox, svc, lock_free):
+                    r.wait_acc = fe - now
+                    push(fe, r)
+                    continue
+            elif fe is not None and r.waited_i != r.i:
                 remaining = fe - now
                 if remaining <= policy.hold_tau:
                     r.wait_acc = remaining
@@ -234,7 +273,7 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
             sbx = 0.0
             if not r.has_sandbox:
                 if sandbox == "queue":
-                    ready = max(now, lock_free) + run.sandbox_svc
+                    ready = max(now, lock_free) + svc
                     lock_free = ready
                     sbx = ready - now
                 else:
@@ -245,6 +284,8 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
             if s.cacheable:
                 fill_end[s.key] = min(fill_end.get(s.key, math.inf), end - s.fill_lead)
             _record(res, si, r, s, now - r.wait_acc, end, outcome, r.wait_acc, s.cmd_s, sbx, replay)
+            if s.error:
+                r.has_sandbox = False
             r.wait_acc = 0.0
             r.i += 1
             push(end, r)
@@ -259,6 +300,14 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
         )
         t = t_last + (run.train_gaps[si] if si < len(run.train_gaps) else 0.0)
     return res
+
+
+def _local_cost(r: _R, s, now: float, sandbox: str, svc: float, lock_free: float) -> float:
+    """Seconds until this rollout's own execution of the call would finish."""
+    sbx = 0.0
+    if not r.has_sandbox:
+        sbx = max(now, lock_free) + svc - now if sandbox == "queue" else r.ro.sandbox_s
+    return sbx + r.stale + s.cmd_s
 
 
 def _record(res, si, r, s, t_issue, t_end, outcome, wait, cmd, sbx, replay) -> None:
