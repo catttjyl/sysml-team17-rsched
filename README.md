@@ -39,7 +39,7 @@ First findings
 
 Next
 
-- Simulator that replays the Terminal-Bench and SQL traces, so scheduling policies can be compared offline.
+- Simulator: done for Terminal-Bench (see [Simulator](#simulator)). Next, an accelerator model, so batch-by-prompt and priority policies can be compared too.
 - Reuse-aware scheduler that turns timing misses into hits: hold or delay sibling rollouts until the first call with the same key finishes. Test it in the simulator first, then in veRL.
 - Measure the scheduler by hit rate (against the upper bound) and by step time. Tool time must leave out sandbox start, the same as the baseline.
 - Look into why cache-on Terminal-Bench runs have longer step times than cache-off (about 200 s vs 134-151 s).
@@ -220,8 +220,7 @@ python scripts/validate_sim.py   # in-sample replay and cache-off -> cache-on pr
 Model notes:
 
 - **Sandbox start is not tool time, and most of it is queueing.** In the trace it is inside `t_end - t_start` of a rollout's first executed call. `podman run` runs under one node-wide `flock` (`terminal_podman.py`). An uncontended start takes about 1.2 s, so the recorded 16–20 s median is mostly waiting for other rollouts' starts. By default (`--sandbox queue`) the simulator models that lock as one FIFO queue shared by the whole run. Each start holds it for a time calibrated so that the default replay's total sandbox time equals the trace's: 1.37 s (easy) and 1.53 s (medium), above 1.2 s because some starts are slow. About 28% of that target is reconstructed rather than logged (see below). `--sandbox fixed` instead charges each rollout its recorded start time wherever it starts. Runs without podman starts (SQL) have no lock. A rollout whose calls and test all hit never starts a sandbox. A call that raises closes the sandbox, so the next execution starts a new one.
-- **The Terminal-Bench test is a cached call too.** `executor.test(history)` is keyed by the full history. Siblings with the same history share it, including all rollouts that made no tool call; those make up most of the test hits that holding adds. Cold tests take about 12 s (median), 37–43 s at p90.
-- **After a hit, a later miss re-runs the hit calls.** These runs keep no snapshots, so the sandbox has to catch up (`source=fresh, executed>1` in the trace). The simulator charges that replay.
+- **The Terminal-Bench test is a cached call too.** `executor.test(history)` is keyed by the full history. Siblings with the same history share it, including all rollouts that made no tool call; those make up most of the test hits that holding adds. Cold tests take about 12 s (median); p90 is 20 s on easy and 41 s on medium.
 - **Below an uncacheable call (a timeout), nothing is cached**, the test included. This is an assumption backed by one trace case. A call that raised is dropped from the history instead and doesn't break the chain.
 - A test hit costs about 0.5 s in a rollout with a live sandbox, which is stopped too, and about 0 s otherwise. Both values are measured from the trace.
 - A test result becomes visible to siblings 0.5 s before the call ends (the sandbox is stopped after the insert).
@@ -237,12 +236,13 @@ Model notes:
 - **What the timing misses are.** Every repeat inside a step of a key not already cached is a timing miss in these runs: 37 on easy, 49 on medium. Almost all are siblings issuing the same first call within about 3 s of the filler. Cross-step repeats (28 on easy) are already hits. Holding saves duplicated sandboxes and commands. It doesn't save latency, because the median held wait is about 20 s.
 - **Step time:** the CLI gives the per-step change (median, 10th–90th percentile) and the total change. Total time is a paired comparison on the same trace, but a few steps with 600 s timeouts dominate it, and the median hides them. Report both.
 - **Small step-time effects are inside the model's error.** The queue model's in-sample median step is 5–8% high.
-  - Bounded holds (`hold:5`–`hold:10`) change total time by −1% to +2.6%, and the two sandbox models disagree on the sign.
-  - The one robust effect is from holding with no limit. On TB medium, siblings of a call that times out wait out the 600 s, then run it anyway, so total time rises 12% (queue) to 16% (fixed). The cache-off twin shows +18% / +22%.
+  - `hold:10` changes total time by −1.0% to +4.4% across the four runs, and the two sandbox models disagree on the sign.
+  - `hold:inf` changes total time by −3.8% to +1.4% on three runs. On TB medium cache-off it adds +18% (queue) / +22% (fixed): a held sibling waits out a call that then times out after 600 s, and has to run it itself. That is one event, but it shows the risk of waiting with no limit.
+  - A call waits at most once. If the execution it waited for inserts nothing, it runs the call itself rather than queueing behind another sibling's retry.
   - A 10 s bound recovers most of the reuse anyway: tool hit rate 10.2% of a possible 11.5% on easy, 5.1% of 8.0% on medium.
-- **Where the waiting goes.** Most held seconds are on tests, not tool calls. Held tool calls wait a median of about 5–7 s, held tests about 20–30 s. Most of the sandbox starts holding saves come from no-tool rollouts whose test now hits. On TB medium, the starts saved don't cover the waiting.
+- **Where the waiting goes.** Most held seconds are on tests, not tool calls. Held tool calls wait a median of about 5–8 s, held tests about 30–35 s. Most of the sandbox starts holding saves come from no-tool rollouts whose test now hits. On TB medium, the starts saved don't cover the waiting.
 - **Neither sandbox model is validated for non-default schedules.** The queue model's step-time gains come from fewer sandbox starts. The fixed model charges a delayed rollout its recorded queued start, which overstates the cost of delaying it. The figures show both.
-- **No accelerator model.** Batch-by-prompt and priority policies, and the hit-rate vs. accelerator-idle trade-off, need one. Scout can only cost time here, because holding siblings back frees nothing.
+- **No accelerator model.** Batch-by-prompt and priority policies, and the hit-rate vs. accelerator-idle trade-off, need one. Scout frees no GPU time here; in the queue model it only spreads out sandbox starts.
 
 Validation (`scripts/validate_sim.py`):
 

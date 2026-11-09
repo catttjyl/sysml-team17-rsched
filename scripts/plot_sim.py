@@ -12,9 +12,7 @@ scripts/plot_poster.py.
 * Time panel: total rollout time over the 20 steps against default, a paired
   comparison on the same trace. Bar = sandbox-lock queue model, diamond =
   recorded sandbox start times. Neither is validated for non-default
-  schedules. A 10 s hold stays within about +-2% under both; holding with no
-  limit costs +12-16% on TB medium under both (siblings wait out 600 s
-  timeouts); scout's sign depends on the model.
+  schedules, and the time effects shown are within the model's error.
 """
 
 from __future__ import annotations
@@ -39,7 +37,7 @@ from rsched.sim import Policy, load_run, simulate, summarize  # noqa: E402
 
 RUNS = [("tb-easy_cache-on", "TB easy"), ("tb-medium_cache-on", "TB medium")]
 POLICIES = [
-    ("default", "default\n(veRL today)"),
+    ("default", "default"),
     ("hold:10", "hold\n≤ 10 s"),
     ("hold:inf", "hold until\nfilled"),
     ("scout:30", "scout\n≤ 30 s"),
@@ -83,6 +81,7 @@ def draw(axes, pols, data, fixed, label_size, ub_lw):
         ax.scatter(xs, total_change(fixed[label]), marker="D", s=label_size * 3, color=INK2, zorder=5)
     ax.axhline(0, color=INK2, lw=0.8)
     ax.set_title("Total time vs. default")
+    ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=6, steps=[1, 2, 4, 5, 10]))
     for ax in axes:
         ax.set_xticks(range(n), [p for _, p in pols])
         ax.yaxis.grid(True, color=GRID)
@@ -113,7 +112,7 @@ def main() -> None:
     fig.legend(legend_handles(1.6), ["TB easy", "TB medium", "reuse bound (every repeated key hits)",
                                      "recorded sandbox start times"],
                ncol=4, loc="lower center", bbox_to_anchor=(0.5, -0.1), fontsize=13)
-    fig.suptitle("A short bounded hold recovers most sibling reuse; waiting without a limit can wait out a timeout",
+    fig.suptitle("A short bounded hold recovers most sibling reuse; time effects stay within the model's error",
                  x=0.01, ha="left", fontsize=17, fontweight="bold", y=1.06)
     fig.text(0.01, 0.98, "Simulated on the full Terminal-Bench traces (Qwen2.5-1.5B, 4 prompts × 8 rollouts × 20 steps, "
              "cache on). Bars: sandbox starts queue on the node's start lock", ha="left", fontsize=12.5, color=INK2)

@@ -315,7 +315,7 @@ def load_run(
                         error=e.get("error") is not None,
                         seq=e["seq"],
                         trace_hit=bool(e["hit"]),
-                        snap=(e["key"] in snap_keys) if snap_keys is not None else cmd >= SNAPSHOT_MIN_S,
+                        snap=is_snap(e["key"]),
                     )
                 )
             else:  # score
