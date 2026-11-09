@@ -3,8 +3,8 @@
     python scripts/plot_sim.py [--out results/poster_figures]
 
 Replays the cache-on traces in results/tbench_full_b4n8 with rsched.sim under
-each policy and writes fig6_sim_policies.{png,pdf} and the one-column
-fig6_sim_policies_column.{png,pdf}. Same colors and fonts as
+each policy and writes fig6_sim_policies.png and the one-column
+fig6_sim_policies_column.png. Same colors and fonts as
 scripts/plot_poster.py.
 
 * Hit-rate panels: the dashed line is the reuse bound (every repeat of a key
@@ -117,8 +117,7 @@ def main() -> None:
                  x=0.01, ha="left", fontsize=17, fontweight="bold", y=1.06)
     fig.text(0.01, 0.98, "Simulated on the full Terminal-Bench traces (Qwen2.5-1.5B, 4 prompts × 8 rollouts × 20 steps, "
              "cache on). Bars: sandbox starts queue on the node's start lock", ha="left", fontsize=12.5, color=INK2)
-    for ext in ("png", "pdf"):
-        fig.savefig(out / f"fig6_sim_policies.{ext}", bbox_inches="tight")
+    fig.savefig(out / "fig6_sim_policies.png", bbox_inches="tight")
     print(f"wrote {out}/fig6_sim_policies.png")
     column_figure(out)
 
@@ -133,8 +132,7 @@ def column_figure(out: Path) -> None:
         draw(axes, COLUMN_POLICIES, data, fixed, label_size=13, ub_lw=2)
         fig.legend(legend_handles(2), ["TB easy", "TB medium", "reuse bound", "recorded sandbox times"],
                    ncol=2, loc="lower center", bbox_to_anchor=(0.5, -0.27), handlelength=1.6, columnspacing=1.2)
-        for ext in ("png", "pdf"):
-            fig.savefig(out / f"fig6_sim_policies_column.{ext}", bbox_inches="tight")
+        fig.savefig(out / "fig6_sim_policies_column.png", bbox_inches="tight")
     print(f"wrote {out}/fig6_sim_policies_column.png")
 
 
