@@ -265,18 +265,22 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
                 continue
             # an execution of this key is in flight (it may time out and insert nothing)
             pend = min((x for x in inflight.get(s.key, ()) if x > now), default=None) if s.key else None
-            if pend is not None and policy.hold_cost:
+            # A call waits at most once: if the execution it waited for inserts nothing (a timeout),
+            # it runs the call itself rather than queueing behind a sibling's retry.
+            if pend is not None and r.waited_i != r.i and policy.hold_cost:
                 limit = _local_cost(r, s, now, sandbox, svc, lock_free)
                 if policy.hold_tau > 0:  # hold:cost+hold:<tau>: both limits apply
                     limit = min(limit, policy.hold_tau)
                 if pend - now <= limit:
                     r.wait_acc += pend - now
+                    r.waited_i = r.i
                     push(pend, r)
                     continue
-            elif pend is not None and r.waited_i != r.i:
+            elif pend is not None and r.waited_i != r.i and not policy.hold_cost:
                 remaining = pend - now
                 if remaining <= policy.hold_tau:
                     r.wait_acc += remaining
+                    r.waited_i = r.i
                     push(pend, r)
                     continue
                 if policy.hold_tau > 0:

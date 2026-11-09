@@ -272,3 +272,17 @@ def test_hit_on_snapshot_forks_instead_of_replaying(tmp_path):
     res = simulate(run, Policy.parse("default"), sandbox="fixed")
     k2 = next(c for c in res.calls if c.key == "k2")
     assert k2.replay_s == 0.0 and k2.sandbox_s == pytest.approx(SB)
+
+
+def test_hold_waits_once_not_behind_retries(tmp_path):
+    """A, B and C time out on the same call. B waits for A, then runs it; C waits for A once too
+    and must not queue again behind B's retry."""
+    t = 50.0
+    a = [("gen", 0, 1, {}), ("tool", 1, 1 + SB + t, {**_tool("k1", 1), "uncacheable": True}), ("score", 67, 67 + TEST, {})]
+    b = [("gen", 0, 2, {}), ("tool", 2, 2 + SB + t, {**_tool("k1", 1), "uncacheable": True}), ("score", 68, 68 + TEST, {})]
+    c = [("gen", 0, 3, {}), ("tool", 3, 3 + SB + t, {**_tool("k1", 1), "uncacheable": True}), ("score", 69, 69 + TEST, {})]
+    run = load_run(_write(tmp_path, [("A", a), ("B", b), ("C", c)]))
+    res = simulate(run, Policy.parse("hold:inf"), sandbox="fixed")
+    waits = {x.rollout: x.wait_s for x in res.calls if x.kind == "tool"}
+    assert waits["B"] == pytest.approx(1 + SB + t - 2, abs=0.01)
+    assert waits["C"] == pytest.approx(1 + SB + t - 3, abs=0.01)
