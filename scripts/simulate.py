@@ -9,7 +9,8 @@ and a markdown table per policy. Tool seconds exclude sandbox start. Step-time
 changes are against the first policy: per step (median, 10th-90th percentile
 over steps) and in total (sum of step makespans, a paired comparison).
 ``--sandbox fixed`` charges each rollout its recorded sandbox start instead of
-modelling the start lock (exact replay of the default schedule).
+modelling the start lock (exact replay of the default schedule). ``--sandbox
+free`` makes starts cost nothing, as with a warm pool of pre-started containers.
 """
 
 from __future__ import annotations
@@ -82,8 +83,9 @@ def main() -> None:
     ap.add_argument("--step-gap", type=float, default=5.0, help="rollout-start gap (s) that separates steps")
     ap.add_argument("--cmd-timeout", type=float, default=600.0)
     ap.add_argument("--hit-latency", type=float, default=None, help="default: median trace hit, else 5 ms")
-    ap.add_argument("--sandbox", choices=["queue", "fixed"], default="queue",
-                    help="queue: model the node's sandbox start lock; fixed: recorded start times")
+    ap.add_argument("--sandbox", choices=["queue", "fixed", "free"], default="queue",
+                    help="queue: model the node's sandbox start lock; fixed: recorded start times; "
+                         "free: starts cost nothing (a warm pool of containers)")
     ap.add_argument("--gpu", choices=["fixed", "shared"], default="fixed",
                     help="fixed: recorded generation times; shared: generations slow down under load (gpu.py)")
     ap.add_argument("--json", help="write all summaries here")

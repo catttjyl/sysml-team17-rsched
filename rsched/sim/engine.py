@@ -32,7 +32,10 @@ Model
   for ``run.sandbox_svc`` seconds, calibrated so that the default replay's
   total sandbox time equals the trace's (``lock_service``). ``sandbox="fixed"``
   instead charges each rollout its recorded start time wherever it starts
-  (exact trace replay). Runs without podman starts (SQL) have no lock.
+  (exact trace replay). ``sandbox="free"`` makes every start cost nothing, as
+  with a warm pool of pre-started containers: it isolates what a schedule does
+  by itself, without gains or losses that come from container-start contention.
+  Runs without podman starts (SQL) have no lock.
   Hits never start a sandbox; a rollout whose calls and test all hit has none.
   A call that raises closes the sandbox (the executor does), so the next
   execution starts a new one.
@@ -171,11 +174,11 @@ def lock_service(run: Run) -> float:
 
 
 def simulate(run: Run, policy: Policy, sandbox: str = "queue", gpu: str = "fixed") -> SimResult:
-    if sandbox not in ("queue", "fixed"):
-        raise ValueError(f"sandbox must be 'queue' or 'fixed', not {sandbox!r}")
+    if sandbox not in ("queue", "fixed", "free"):
+        raise ValueError(f"sandbox must be 'queue', 'fixed' or 'free', not {sandbox!r}")
     if gpu not in ("fixed", "shared"):
         raise ValueError(f"gpu must be 'fixed' or 'shared', not {gpu!r}")
-    if not run.has_lock:
+    if not run.has_lock and sandbox == "queue":
         sandbox = "fixed"  # no podman starts in this trace: nothing to queue
     svc = lock_service(run) if sandbox == "queue" else 0.0
     res = SimResult(run, policy)
@@ -356,7 +359,7 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue", gpu: str = "fixed
                     ready = max(now, lock_free) + svc
                     lock_free = ready
                     sbx = ready - now
-                else:
+                elif sandbox == "fixed":
                     sbx = r.ro.sandbox_s
                 r.has_sandbox = True
             replay, r.stale = r.stale, 0.0
@@ -393,7 +396,10 @@ def _local_cost(r: _R, s, now: float, sandbox: str, svc: float, lock_free: float
     """Seconds until this rollout's own execution of the call would finish."""
     sbx = 0.0
     if not r.has_sandbox:
-        sbx = max(now, lock_free) + svc - now if sandbox == "queue" else r.ro.sandbox_s
+        if sandbox == "queue":
+            sbx = max(now, lock_free) + svc - now
+        elif sandbox == "fixed":
+            sbx = r.ro.sandbox_s
     return sbx + r.stale + s.cmd_s
 
 
