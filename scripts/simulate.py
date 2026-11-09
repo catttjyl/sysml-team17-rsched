@@ -84,8 +84,6 @@ def main() -> None:
     ap.add_argument("--hit-latency", type=float, default=None, help="default: median trace hit, else 5 ms")
     ap.add_argument("--sandbox", choices=["queue", "fixed"], default="queue",
                     help="queue: model the node's sandbox start lock; fixed: recorded start times")
-    ap.add_argument("--gpu", choices=["fixed", "shared"], default="fixed",
-                    help="fixed: recorded generation times; shared: generations slow down under load (gpu.py)")
     ap.add_argument("--json", help="write all summaries here")
     args = ap.parse_args()
 
@@ -96,16 +94,15 @@ def main() -> None:
         print(f"\n### {path}  ({run.workload}, cache {run.cache}, {len(run.steps)} steps, "
               f"hit latency {run.hit_latency * 1e3:.1f} ms, test hit {run.test_hit_latency:.2f} s, "
               + (f"sandbox lock {lock_service(run):.2f} s/start (uncontended {run.lone_svc:.2f} s), "
-                 if run.has_lock else "no sandbox lock, ") + f"model {args.sandbox}, gpu {args.gpu})")
+                 if run.has_lock else "no sandbox lock, ") + f"model {args.sandbox})")
         print(f"trace: tool hits {tr['tool_hits']}/{tr['tool_calls']}, test hits {tr['test_hits']}/{tr['test_calls']}, "
               f"step makespan {tr['makespan_mean']:.1f} s\n")
         print(HEADER)
         base = None
         for p in args.policies:
-            s = summarize(simulate(run, Policy.parse(p), sandbox=args.sandbox, gpu=args.gpu))
+            s = summarize(simulate(run, Policy.parse(p), sandbox=args.sandbox))
             s["trace"] = tr
             s["sandbox_model"] = args.sandbox
-            s["gpu_model"] = args.gpu
             base = base or s
             out.append(s)
             print(fmt_row(s, base))

@@ -56,7 +56,6 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
-from rsched.sim.gpu import FLAT, LoadProfile, SpeedCurve, assign_replicas, fit_curve
 from rsched.timeline import load_events
 
 SNAPSHOT_MIN_S = 2.5  # cache-off fallback: commands at least this long are assumed snapshotted
@@ -67,7 +66,6 @@ TEST_FILL_LEAD_S = 0.5  # a test result is inserted before the sandbox is stoppe
 @dataclass
 class Seg:
     kind: str  # gen | gap | tool | score
-    work: float = 0.0  # gen: recorded duration x relative speed at the recorded load (see gpu.py)
     dur: float = 0.0  # gen / gap / non-cacheable score: fixed duration
     key: Optional[str] = None  # tool / cacheable score
     cmd_s: float = 0.0  # tool / score: execution time, sandbox start excluded
@@ -89,7 +87,6 @@ class Rollout:
     start: float  # offset from its step's start
     segs: list[Seg]
     sandbox_s: float  # recorded (queued) sandbox start of this rollout, for the fixed model
-    replica: int = -1  # vLLM replica reconstructed from the trace (veRL routing), for checks
 
 
 @dataclass
@@ -112,30 +109,12 @@ class Run:
     sandbox_svc: Optional[float] = None  # lock seconds per start; None: calibrate (engine.lock_service)
     has_lock: bool = False  # the trace has podman sandbox starts behind the start lock
     lone_svc: float = 1.2  # median uncontended start, for reference
-    gpu: SpeedCurve = FLAT  # per-sequence generation speed vs. per-replica load, fitted on this run
-    replicas: int = 4  # vLLM replicas (GPUs / tensor-parallel size), from train.log
     train_gaps: list[float] = field(default_factory=list)  # trace time between step i end and step i+1 start
 
 
 def _median(xs, default):
     xs = [x for x in xs if x is not None]
     return statistics.median(xs) if xs else default
-
-
-def _replicas(path: str, default: int = 4) -> int:
-    """vLLM replicas = rollout GPUs / tensor-parallel size, read from the run's train.log."""
-    import re
-
-    log = os.path.join(path.rstrip("/").removesuffix("/timeline"), "train.log")
-    if not os.path.exists(log):
-        return default
-    with open(log, errors="replace") as fh:
-        text = fh.read(2_000_000)
-    g = re.search(r"'n_gpus_per_node': (\d+)", text)
-    tp = re.search(r"'tensor_model_parallel_size': (\d+)", text)
-    if not (g and tp) or int(tp.group(1)) < 1:
-        return default
-    return max(1, int(g.group(1)) // int(tp.group(1)))
 
 
 def _snapshot_keys(path: str) -> Optional[set]:
@@ -301,15 +280,6 @@ def load_run(
     if cache == "off":  # a cache-off trace has no hits to measure; use what cache-on runs show
         test_hit_latency, test_hit_latency_cold = 0.5, 0.0
 
-    # --- generation speed under load (gpu="shared"): per replica, routed as veRL does
-    replicas = _replicas(path)
-    gen_iv = {r: [(e["t_start"], e["t"]) for e in by_r[r] if e["ev"] == "gen_end"] for r in rids}
-    replica_of = assign_replicas(gen_iv, replicas)
-    profiles = [LoadProfile([iv for r in rids if replica_of.get(r) == k for iv in gen_iv[r]]) for k in range(replicas)]
-    curve = fit_curve([(e["t"] - e["t_start"], e.get("new_tokens") or 0,
-                        profiles[replica_of[r]].mean_load(e["t_start"], e["t"]))
-                       for r in rids for e in by_r[r] if e["ev"] == "gen_end"])
-
     # --- rollouts -> segments
     rollouts = []
     for r in rids:
@@ -328,7 +298,7 @@ def load_run(
             if a > cur:
                 segs.append(Seg("gap", dur=a - cur))
             if kind == "gen":
-                segs.append(Seg("gen", dur=b - a, work=profiles[replica_of[r]].work(a, b, curve)))
+                segs.append(Seg("gen", dur=b - a))
             elif kind == "tool":
                 s = e.get("sandbox_start_s") or 0.0
                 if e["hit"]:
@@ -366,7 +336,7 @@ def load_run(
             (
                 st["t"],
                 en["t"],
-                Rollout(r, st["uid"], task, workload, 0.0, segs, rollout_sandbox(r, task), replica_of.get(r, -1)),
+                Rollout(r, st["uid"], task, workload, 0.0, segs, rollout_sandbox(r, task)),
             )
         )
 
@@ -384,4 +354,4 @@ def load_run(
         prev = t0
     gaps = [max(0.0, b.t0 - a.t_end) for a, b in zip(steps, steps[1:])]
     return Run(path, workload, cache, steps, hit_latency, test_hit_latency, test_hit_latency_cold,
-               None if known else 0.0, bool(known), svc, curve, replicas, gaps)
+               None if known else 0.0, bool(known), svc, gaps)
