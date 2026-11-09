@@ -1,17 +1,22 @@
 """Generation speed under load: the accelerator model for ``gpu="shared"``.
 
-The recorded runs serve rollouts from vLLM (one replica per GPU, TP=1, 4 GPUs).
-A generation's decode speed falls when many generations run at once: in the
-Terminal-Bench traces, within the same turn, about 225 tok/s with <= 8 running,
-about 205-215 with 9-16, and about 150 with 17-32 (the burst at the start of a
-step). The traces don't say which replica served which request, so load is
-the number of generations running across the run, the same count the engine
-uses.
+The recorded runs serve rollouts from vLLM, one replica per GPU (4 GPUs,
+TP=1). A generation's decode speed falls when many generations run on its
+replica at once.
+
+Routing follows veRL v0.9.1 (``verl/workers/rollout/router.py``,
+``GlobalRequestLoadBalancer``): each rollout has one ``request_id`` for its
+whole conversation (``ToolAgentLoop._make_request_id``, a uuid). That id sticks
+to the replica that had the fewest generation requests in flight when the
+rollout's first generation arrived. Ties are broken at random in veRL and by
+lowest index here. The traces don't record the replica, so ``assign_replicas``
+replays the same rule on the recorded generation intervals. Load is the
+number of generations running on the rollout's replica.
 
 Model
 -----
-* ``SpeedCurve``: per-sequence speed as a function of load, fitted per run
-  from (tokens / duration, time-averaged load) of each recorded generation,
+* ``SpeedCurve``: per-sequence speed as a function of per-replica load, fitted
+  per run from (tokens / duration, time-averaged load) of each recorded generation,
   forced non-increasing (pool-adjacent-violators) and checked positive.
 * Each recorded generation becomes an amount of work: the integral of
   ``speed(load_recorded(t))`` over its recorded interval. In the simulation it
@@ -102,13 +107,28 @@ class LoadProfile:
         return sum(d * curve.relative(n) for d, n in self.pieces(a, b))
 
 
-def fit_curve(gens: list[tuple[float, float, int]], profile: LoadProfile) -> SpeedCurve:
-    """Fit per-sequence speed vs. load from (t_start, t_end, new_tokens) of recorded generations."""
+def assign_replicas(gens: dict[str, list[tuple[float, float]]], replicas: int) -> dict[str, int]:
+    """veRL's sticky least-in-flight routing, replayed on recorded generation intervals per rollout."""
+    if replicas < 1:
+        raise ValueError(f"replicas must be >= 1, got {replicas}")
+    placed: list[list[tuple[float, float]]] = [[] for _ in range(replicas)]
+    out: dict[str, int] = {}
+    for rid in sorted((r for r in gens if gens[r]), key=lambda r: min(a for a, _ in gens[r])):
+        t = min(a for a, _ in gens[rid])
+        loads = [sum(1 for a, b in iv if a <= t < b) for iv in placed]
+        k = loads.index(min(loads))
+        out[rid] = k
+        placed[k].extend(gens[rid])
+    return out
+
+
+def fit_curve(samples: list[tuple[float, int, float]]) -> SpeedCurve:
+    """Fit per-sequence speed vs. load from (duration, new_tokens, mean load) of recorded generations."""
     by_load: dict[int, list[float]] = {}
-    for a, b, n in gens:
-        if b - a < MIN_DUR_S or not n or n < MIN_TOKENS:
+    for dur, n, load in samples:
+        if dur < MIN_DUR_S or not n or n < MIN_TOKENS:
             continue
-        by_load.setdefault(max(1, round(profile.mean_load(a, b))), []).append(n / (b - a))
+        by_load.setdefault(max(1, round(load)), []).append(n / dur)
     if not by_load:
         return FLAT
     # pool sparse loads into their lower neighbour, then median per bin

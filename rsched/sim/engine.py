@@ -6,10 +6,14 @@ Model
   replayed unchanged. The cache persists across steps (one TVCache per run).
 * Every rollout replays its own segments. Overheads take their recorded time.
   Generations take their recorded time with ``gpu="fixed"`` (the default).
-  With ``gpu="shared"`` they share the accelerator: each has an amount of
-  work and progresses at ``run.gpu`` speed for the number of generations
-  running (see ``gpu.py``). Under the recorded schedule both give the same
-  times; holding rollouts back only matters with ``shared``.
+  With ``gpu="shared"`` they share the accelerator: a rollout sticks to the
+  vLLM replica with the fewest generations running when its first generation
+  starts (veRL's router), and each generation has an amount of work that
+  progresses at ``run.gpu`` speed for the load on its replica (see
+  ``gpu.py``). Under the recorded schedule both give the same times.
+* Events can be cancelled, as in a classic discrete-event queue: a running
+  generation's end is cancelled and rescheduled whenever its replica's load
+  changes. A gen_end that fires for a rollout not generating is a bug and raises.
 * A cacheable call with key K at time t:
     - an execution of K already finished  -> hit (``hit_latency``)
     - an execution of K is still running  -> the policy may wait for it, up to
@@ -124,11 +128,12 @@ class SimResult:
     policy: Policy
     calls: list[CallRec] = field(default_factory=list)
     steps: list[StepRec] = field(default_factory=list)
+    replica_of: dict = field(default_factory=dict)  # gpu="shared": rollout id -> replica it was routed to
 
 
 class _R:
     __slots__ = ("ro", "i", "has_sandbox", "waited_i", "wait_acc", "started", "t_start", "gens", "done", "t_ready",
-                 "stale", "hist", "gen_ver", "gen_t0")
+                 "stale", "hist", "gen_event", "gen_t0", "replica")
 
     def __init__(self, ro: Rollout):
         self.ro = ro
@@ -143,8 +148,9 @@ class _R:
         self.t_ready = 0.0  # when the rollout would have started without gating
         self.stale = 0.0  # command seconds of hit calls not yet applied to the sandbox
         self.hist = 0.0  # command seconds of all successful calls (replayed after an error)
-        self.gen_ver = 0  # gpu="shared": version of this rollout's pending gen_end event
+        self.gen_event = -1  # gpu="shared": id of this rollout's pending gen_end event
         self.gen_t0 = 0.0
+        self.replica = -1  # gpu="shared": sticky vLLM replica, chosen at the first generation
 
 
 def lock_service(run: Run) -> float:
@@ -193,30 +199,34 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue", gpu: str = "fixed
             gate_open = {u: None for u in scout_of}
             waiters = {u: [] for u in scout_of}
 
-        def push(when: float, r: _R, tag: str = "run") -> None:
-            heapq.heappush(heap, (when, next(ctr), tag, r))
+        cancelled: set[int] = set()
+
+        def push(when: float, r: _R, tag: str = "run") -> int:
+            eid = next(ctr)
+            heapq.heappush(heap, (when, eid, tag, r))
+            return eid
 
         for r in rs:
             r.t_ready = t0 + r.ro.start
             push(r.t_ready, r, "start")
 
-        # gpu="shared": generations in progress, as rollout -> [remaining work, last update]
-        active: dict[_R, list[float]] = {}
+        # gpu="shared": per replica, generations in progress as rollout -> [remaining work, last update]
+        active: list[dict[_R, list[float]]] = [{} for _ in range(run.replicas)]
 
-        def gpu_advance(now: float) -> None:
-            if active:
-                rel = run.gpu.relative(len(active))
-                for st in active.values():
+        def gpu_advance(k: int, now: float) -> None:
+            if active[k]:
+                rel = run.gpu.relative(len(active[k]))
+                for st in active[k].values():
                     st[0] -= rel * (now - st[1])
                     st[1] = now
 
-        def gpu_reschedule(now: float) -> None:
-            """The load changed: every running generation gets a new end time (old events go stale)."""
-            if active:
-                rel = run.gpu.relative(len(active))
-                for rr, st in active.items():
-                    rr.gen_ver += 1
-                    push(now + max(0.0, st[0]) / rel, rr, ("gen_end", rr.gen_ver))
+        def gpu_reschedule(k: int, now: float) -> None:
+            """Replica k's load changed: cancel each running generation's end and schedule the new one."""
+            if active[k]:
+                rel = run.gpu.relative(len(active[k]))
+                for rr, st in active[k].items():
+                    cancelled.add(rr.gen_event)
+                    rr.gen_event = push(now + max(0.0, st[0]) / rel, rr, "gen_end")
 
         def open_gate(uid: str, now: float) -> None:
             if gate_open.get(uid, 0.0) is None:
@@ -237,18 +247,22 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue", gpu: str = "fixed
             push(now, r)
 
         while heap:
-            now, _, tag, r = heapq.heappop(heap)
+            now, eid, tag, r = heapq.heappop(heap)
+            if eid in cancelled:
+                cancelled.discard(eid)
+                continue
             if tag == "gate_open":
                 open_gate(r.ro.uid, now)
                 continue
-            if isinstance(tag, tuple):  # ("gen_end", version)
-                if tag[1] != r.gen_ver or r not in active:
-                    continue  # rescheduled since
-                gpu_advance(now)
-                del active[r]
+            if tag == "gen_end":
+                k = r.replica
+                if r not in active[k] or eid != r.gen_event:
+                    raise RuntimeError(f"gen_end for rollout {r.ro.id} that is not generating (event {eid})")
+                gpu_advance(k, now)
+                del active[k][r]
                 r.gens.append((r.gen_t0, now))
                 r.i += 1
-                gpu_reschedule(now)
+                gpu_reschedule(k, now)
                 push(now, r)
                 continue
             if tag in ("start", "gate_timeout"):
@@ -272,10 +286,15 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue", gpu: str = "fixed
                 continue
             s = segs[r.i]
             if s.kind == "gen" and gpu == "shared":
-                gpu_advance(now)
+                if r.replica < 0:  # veRL: sticky to the replica with the fewest requests in flight
+                    loads = [len(a) for a in active]
+                    r.replica = loads.index(min(loads))
+                    res.replica_of[r.ro.id] = r.replica
+                k = r.replica
+                gpu_advance(k, now)
                 r.gen_t0 = now
-                active[r] = [s.work, now]
-                gpu_reschedule(now)
+                active[k][r] = [s.work, now]
+                gpu_reschedule(k, now)
                 continue
             if s.kind in ("gen", "gap") or (s.kind == "score" and s.key is None):  # SQL scoring: not a cache call
                 if s.kind == "gen":
