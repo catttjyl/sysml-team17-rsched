@@ -65,31 +65,39 @@ def curve_check(root: str, names: list[str]) -> None:
     """Fit the speed-vs-load curve on one run and predict another run's generation times."""
     import json
 
-    from rsched.sim.gpu import LoadProfile, fit_curve
+    from rsched.sim.gpu import LoadProfile, assign_replicas, fit_curve
     from rsched.timeline import load_events
 
     def gens_of(name):
+        """(t_start, t_end, tokens, mean load on its replica) per generation, routed as veRL does."""
+        run = load_run(os.path.join(root, name))
         evs = load_events(os.path.join(root, name, "timeline"))
-        g = [(e["t_start"], e["t"], e.get("new_tokens") or 0) for e in evs if e["ev"] == "gen_end"]
-        return g, LoadProfile([(a, b) for a, b, _ in g])
+        iv: dict = {}
+        for e in evs:
+            if e["ev"] == "gen_end":
+                iv.setdefault(e["rollout"], []).append(e)
+        rep = assign_replicas({r: [(e["t_start"], e["t"]) for e in es] for r, es in iv.items()}, run.replicas)
+        profs = [LoadProfile([(e["t_start"], e["t"]) for r, es in iv.items() if rep.get(r) == k for e in es])
+                 for k in range(run.replicas)]
+        return [(e["t_start"], e["t"], e.get("new_tokens") or 0, profs[rep[r]].mean_load(e["t_start"], e["t"]))
+                for r, es in iv.items() for e in es]
 
     data = {n: gens_of(n) for n in names}
-    curves = {n: fit_curve(*data[n]) for n in names}
-    print("\n| curve fitted on | predicts | median abs. error, with load | without load | same, load > 16: with | without |")
+    curves = {n: fit_curve([(b - a, k, load) for a, b, k, load in data[n]]) for n in names}
+    print("\n| curve fitted on | predicts | median abs. error, with load | without load | same, replica load > 4: with | without |")
     print("|---|---|---|---|---|---|")
     for src in names:
         for dst in names:
             if src == dst:
                 continue
-            gens, prof = data[dst]
             c = curves[src]
             rows = []  # (load, error with load, error without)
-            for a, b, n in gens:
+            for a, b, n, load in data[dst]:
                 if b - a < 0.05 or n < 20:
                     continue
-                dur, load = b - a, prof.mean_load(a, b)
+                dur = b - a
                 rows.append((load, abs(n / c(load) - dur) / dur, abs(n / c(1) - dur) / dur))
-            hi = [x for x in rows if x[0] > 16]
+            hi = [x for x in rows if x[0] > 4]
             med = lambda xs, i: f"{statistics.median([x[i] for x in xs]):.1%}" if xs else "-"
             print(f"| {src} | {dst} | {med(rows, 1)} | {med(rows, 2)} | {med(hi, 1)} | {med(hi, 2)} |")
 
