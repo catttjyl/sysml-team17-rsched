@@ -253,7 +253,7 @@ Model notes:
   - With free starts, a hit saves only the command or the test, and waiting costs time.
   - **Evaluate policies across scenarios (queue and free) and across runs.** Keep a policy only if it never costs much anywhere, or say which scenario a claim is for.
   - By that rule, short holds are the most robust: `hold:5` stays within ±0.8% everywhere.
-  - Hit counts and work saved don't depend on the scenario.
+  - Hits shift too. With free starts, first copies finish sooner, so short holds catch more: `hold:5` reaches 11.5% on easy and 6.7% on medium, vs 8.8% and 3.0% under the queue model. Default also rises (4.9% → 6.0% easy, 0% → 1.3% medium). Only the reuse bound and the unlimited hold are the same in both scenarios.
 - **Neither sandbox model is validated for non-default schedules.** The queue model's step-time gains come from fewer sandbox starts. The fixed model charges a delayed rollout its recorded queued start, which overstates the cost of delaying it. The figures show both.
 - **No accelerator model.** Batch-by-prompt and priority policies, and the hit-rate vs. accelerator-idle trade-off, need one. Scout frees no GPU time here; in the queue model it only spreads out sandbox starts.
 
