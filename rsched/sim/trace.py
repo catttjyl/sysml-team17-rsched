@@ -19,12 +19,16 @@ sensitivity mode. A rollout whose calls and test all hit never starts one.
 
 For a rollout with no executed tool call the trace does not log its sandbox
 start, so it is reconstructed: replay the lock as a FIFO over all recorded
-start requests, anchored on the logged ready times, with ``sandbox_svc`` per start.
+start requests, anchored on the logged ready times, with the uncontended start
+time per start. flock is not FIFO, so the result is capped to leave the test at
+least the 10th-percentile cold test time.
 
 TVCache keeps no snapshots in these runs (no ``fork`` events), so an execution
 after a hit re-runs the hit calls on the sandbox first (``source=fresh,
-executed>1``). Those replay seconds are taken out of the segment's ``cmd_s`` here
-and charged again by the engine whenever the simulated rollout is behind.
+executed>1``; only two such calls in the traces). Those replay seconds are taken
+out of the segment's ``cmd_s`` here and charged again by the engine whenever the
+simulated rollout is behind. With snapshots (forking from the matched prefix)
+there would be no replay; the replay cost is specific to these runs.
 
 Assumption: after an uncacheable call (a timeout, not inserted), the rest of the
 rollout, its test included, is uncacheable too. One trace case (tb-medium,
@@ -129,7 +133,8 @@ def load_run(
     sandbox_by_task: dict[str, list[float]] = defaultdict(list)
     for e, s in zip(tools, sb):
         # executed>1: the call also re-ran earlier hits; keep only clean single executions here
-        if not e["hit"] and (e.get("executed") or 1) <= 1:
+        if (not e["hit"] and (e.get("executed") or 1) <= 1 and e.get("error") is None
+                and not e.get("uncacheable")):
             cmd_by_key[e["key"]].append(max(0.0, e["t_end"] - e["t_start"] - s))
         if s:
             sandbox_by_task[e["task"]].append(s)
@@ -138,7 +143,9 @@ def load_run(
     if hit_latency is None:
         hit_latency = _median([e["t_end"] - e["t_start"] for e in tools if e["hit"]], 0.005)
 
-    tool_evs = {r: sorted((e for e in by_r[r] if e["ev"] == "tool"), key=lambda e: e["seq"]) for r in rids}
+    # an errored call is logged with the previous call's seq (it is popped first), so break ties by time
+    tool_evs = {r: sorted((e for e in by_r[r] if e["ev"] == "tool"), key=lambda e: (e["seq"], e["t_start"]))
+                for r in rids}
     score_ev = {r: next((e for e in by_r[r] if e["ev"] == "score"), None) for r in rids}
 
     # --- the start lock: service time from uncontended starts, then a FIFO replay
@@ -154,12 +161,22 @@ def load_run(
         elif (workload == "terminal" and sc is not None and not any(not e["hit"] for e in tool_evs[r])
               and not (cache != "off" and sc["t_end"] - sc["t_start"] < TRACE_HIT_S)):
             reqs.append((sc["t_start"], None, r))
+    # flock is not FIFO, so a FIFO replay can give a start longer than the whole test. Cap it so the
+    # test keeps at least the 10th-percentile cold test time of rollouts that had a live sandbox.
+    live_tests = [score_ev[r]["t_end"] - score_ev[r]["t_start"] for r in rids
+                  if score_ev[r] is not None and any(not e["hit"] for e in tool_evs[r])
+                  and not (cache != "off" and score_ev[r]["t_end"] - score_ev[r]["t_start"] < TRACE_HIT_S)]
+    test_floor = statistics.quantiles(live_tests, n=10)[0] if len(live_tests) > 1 else 0.0
     recon: dict[str, float] = {}
     lock_free = -math.inf
     for a, b, r in sorted(reqs, key=lambda x: x[0]):
-        ready = b if b is not None else max(a, lock_free) + svc
-        lock_free = max(lock_free, ready)
-        recon[r] = ready - a
+        if b is not None:
+            recon[r] = b - a
+            lock_free = max(lock_free, b)
+            continue
+        dur = score_ev[r]["t_end"] - score_ev[r]["t_start"]
+        recon[r] = min(max(a, lock_free) + svc - a, max(svc, dur - test_floor))
+        lock_free = max(lock_free, a + recon[r])
 
     def rollout_sandbox(r: str, task: str) -> float:
         if r in recon:
@@ -168,14 +185,19 @@ def load_run(
 
     def replay_before(r: str, upto_seq: float) -> float:
         """Trace seconds spent re-running hit calls before the execution at ``upto_seq``."""
-        tot = 0.0
+        tot = hist = 0.0  # owed replay; all successful history so far
         for e in tool_evs[r]:
             if e["seq"] >= upto_seq:
                 break
-            if e["hit"]:  # hits since the last execution are re-run
-                tot += _median(cmd_by_key.get(e["key"], []), run_cmd)
+            m = _median(cmd_by_key.get(e["key"], []), run_cmd)
+            if e.get("error") is not None:  # the sandbox is closed: a new one replays everything
+                tot = hist
+            elif e["hit"]:  # hits since the last execution are re-run
+                tot += m
+                hist += m
             else:  # an execution brings the sandbox up to date
                 tot = 0.0
+                hist += m
         return tot
 
     def broken_from(r: str) -> float:
@@ -200,7 +222,8 @@ def load_run(
             continue
         dur = sc["t_end"] - sc["t_start"]
         hit = cache != "off" and dur < TRACE_HIT_S
-        had_sandbox = any(e["ev"] == "tool" and not e["hit"] for e in evs)
+        execd = [e for e in tool_evs[r] if not e["hit"]]
+        had_sandbox = bool(execd) and execd[-1].get("error") is None  # an error closes it
         test_info[r] = (key, hit, broken_from(r) == math.inf)
         if not hit:
             t = max(0.0, dur - (0.0 if had_sandbox else rollout_sandbox(r, task)) - replay_before(r, math.inf))

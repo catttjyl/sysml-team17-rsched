@@ -121,7 +121,7 @@ class SimResult:
 
 class _R:
     __slots__ = ("ro", "i", "has_sandbox", "waited_i", "wait_acc", "started", "t_start", "gens", "done", "t_ready",
-                 "stale")
+                 "stale", "hist")
 
     def __init__(self, ro: Rollout):
         self.ro = ro
@@ -135,6 +135,7 @@ class _R:
         self.done = 0.0
         self.t_ready = 0.0  # when the rollout would have started without gating
         self.stale = 0.0  # command seconds of hit calls not yet applied to the sandbox
+        self.hist = 0.0  # command seconds of all successful calls (replayed after an error)
 
 
 def lock_service(run: Run) -> float:
@@ -248,12 +249,16 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
                 _record(res, si, r, s, now - r.wait_acc, now + lat, outcome, r.wait_acc, 0.0, 0.0, 0.0)
                 r.wait_acc = 0.0
                 r.stale += s.cmd_s
+                r.hist += s.cmd_s
                 r.i += 1
                 push(now + lat, r)
                 gate_after(r, s, now + lat)
                 continue
             if fe is not None and policy.hold_cost:
-                if fe - now <= _local_cost(r, s, now, sandbox, svc, lock_free):
+                limit = _local_cost(r, s, now, sandbox, svc, lock_free)
+                if policy.hold_tau > 0:  # hold:cost+hold:<tau>: both limits apply
+                    limit = min(limit, policy.hold_tau)
+                if fe - now <= limit:
                     r.wait_acc = fe - now
                     push(fe, r)
                     continue
@@ -284,8 +289,11 @@ def simulate(run: Run, policy: Policy, sandbox: str = "queue") -> SimResult:
             if s.cacheable:
                 fill_end[s.key] = min(fill_end.get(s.key, math.inf), end - s.fill_lead)
             _record(res, si, r, s, now - r.wait_acc, end, outcome, r.wait_acc, s.cmd_s, sbx, replay)
-            if s.error:
+            if s.error:  # the executor closes the sandbox; a new one must replay the history
                 r.has_sandbox = False
+                r.stale = r.hist
+            else:
+                r.hist += s.cmd_s
             r.wait_acc = 0.0
             r.i += 1
             push(end, r)

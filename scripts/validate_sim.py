@@ -4,7 +4,9 @@
 
 The cache-off and cache-on runs of a workload used the same tasks in every
 step, so simulating the cache-off trace with the cache predicts the cache-on
-run. Nothing from the cache-on trace goes into the prediction. Also prints how
+run. Nothing from the cache-on trace goes into the prediction except three
+constants measured on cache-on traces: the 1.0 s test-hit threshold, the 0.5 s
+test fill lead, and the test-hit latencies (a cache-off trace has no hits). Also prints how
 close the default replay of each trace is to the trace itself (in-sample).
 
 Step makespan is shown as median and mean. The two runs sampled different

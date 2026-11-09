@@ -221,3 +221,27 @@ def test_hold_cost_executes_when_cheaper(tmp_path):
             seg.cmd_s = CMD
     cost = summarize(simulate(run, Policy.parse("hold:cost"), sandbox="fixed"))
     assert cost["tool"]["held_hits"] == 0 and cost["tool"]["timing"] == 1
+
+
+def test_error_closes_sandbox_and_replays_history(tmp_path):
+    """c1 runs, c2 raises (sandbox closed), c3 must start a new sandbox and re-run c1 first.
+    agent_loop logs an errored call with the previous call's seq (it is popped from the history)."""
+    a = [("gen", 0, 1, {}), ("tool", 1, 1 + SB + CMD, _tool("k1", 1)), ("gen", 19, 20, {}),
+         ("tool", 20, 21, {**_tool("k2", 1, sandbox=None), "error": "boom"}), ("gen", 21, 22, {}),
+         ("tool", 22, 22 + SB + CMD + CMD, _tool("k3", 2)), ("score", 42, 42 + TEST, {})]
+    run = load_run(_write(tmp_path, [("A", a)]))
+    res = simulate(run, Policy.parse("default"), sandbox="fixed")
+    k3 = next(c for c in res.calls if c.key == "k3")
+    assert k3.sandbox_s == pytest.approx(SB)
+    assert k3.replay_s == pytest.approx(CMD)  # re-ran c1
+    assert k3.cmd_s == pytest.approx(CMD)  # the trace's replay is not counted twice
+    assert summarize(res)["makespan_mean"] == pytest.approx(42 + TEST, abs=0.01)
+
+
+def test_hold_cost_with_tau_applies_both_limits(tmp_path):
+    a = [("gen", 0, 1, {}), ("tool", 1, 1 + SB + 100, _tool("k1", 1)), ("score", 117, 117 + TEST, {})]
+    b = [("gen", 0, 2, {}), ("tool", 2, 2 + SB + 100, _tool("k1", 1)), ("score", 118, 118 + TEST, {})]
+    run = load_run(_write(tmp_path, [("A", a), ("B", b)]))
+    assert summarize(simulate(run, Policy.parse("hold:cost"), sandbox="fixed"))["tool"]["held_hits"] == 1
+    s = summarize(simulate(run, Policy.parse("hold:cost+hold:10"), sandbox="fixed"))
+    assert s["tool"]["held_hits"] == 0 and s["tool"]["wait_s"] == 0.0  # 115 s > 10 s: no wait at all
