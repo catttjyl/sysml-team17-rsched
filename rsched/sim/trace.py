@@ -56,6 +56,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
+from rsched.sim.gpu import FLAT, LoadProfile, SpeedCurve, fit_curve
 from rsched.timeline import load_events
 
 SNAPSHOT_MIN_S = 2.5  # cache-off fallback: commands at least this long are assumed snapshotted
@@ -66,6 +67,7 @@ TEST_FILL_LEAD_S = 0.5  # a test result is inserted before the sandbox is stoppe
 @dataclass
 class Seg:
     kind: str  # gen | gap | tool | score
+    work: float = 0.0  # gen: recorded duration x relative speed at the recorded load (see gpu.py)
     dur: float = 0.0  # gen / gap / non-cacheable score: fixed duration
     key: Optional[str] = None  # tool / cacheable score
     cmd_s: float = 0.0  # tool / score: execution time, sandbox start excluded
@@ -109,6 +111,7 @@ class Run:
     sandbox_svc: Optional[float] = None  # lock seconds per start; None: calibrate (engine.lock_service)
     has_lock: bool = False  # the trace has podman sandbox starts behind the start lock
     lone_svc: float = 1.2  # median uncontended start, for reference
+    gpu: SpeedCurve = FLAT  # per-sequence generation speed vs. load, fitted on this run
     train_gaps: list[float] = field(default_factory=list)  # trace time between step i end and step i+1 start
 
 
@@ -280,6 +283,11 @@ def load_run(
     if cache == "off":  # a cache-off trace has no hits to measure; use what cache-on runs show
         test_hit_latency, test_hit_latency_cold = 0.5, 0.0
 
+    # --- generation speed under load (gpu="shared")
+    gen_evs = [e for r in rids for e in by_r[r] if e["ev"] == "gen_end"]
+    profile = LoadProfile([(e["t_start"], e["t"]) for e in gen_evs])
+    curve = fit_curve([(e["t_start"], e["t"], e.get("new_tokens") or 0) for e in gen_evs], profile)
+
     # --- rollouts -> segments
     rollouts = []
     for r in rids:
@@ -298,7 +306,7 @@ def load_run(
             if a > cur:
                 segs.append(Seg("gap", dur=a - cur))
             if kind == "gen":
-                segs.append(Seg("gen", dur=b - a))
+                segs.append(Seg("gen", dur=b - a, work=profile.work(a, b, curve)))
             elif kind == "tool":
                 s = e.get("sandbox_start_s") or 0.0
                 if e["hit"]:
@@ -354,4 +362,4 @@ def load_run(
         prev = t0
     gaps = [max(0.0, b.t0 - a.t_end) for a, b in zip(steps, steps[1:])]
     return Run(path, workload, cache, steps, hit_latency, test_hit_latency, test_hit_latency_cold,
-               None if known else 0.0, bool(known), svc, gaps)
+               None if known else 0.0, bool(known), svc, curve, gaps)

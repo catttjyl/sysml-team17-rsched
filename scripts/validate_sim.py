@@ -61,5 +61,40 @@ def main() -> None:
                       f"| {s['makespan_median']:.1f} / {real['mk_med']:.1f} | {s['makespan_mean']:.1f} / {real['mk']:.1f} |")
 
 
+def curve_check(root: str, names: list[str]) -> None:
+    """Fit the speed-vs-load curve on one run and predict another run's generation times."""
+    import json
+
+    from rsched.sim.gpu import LoadProfile, fit_curve
+    from rsched.timeline import load_events
+
+    def gens_of(name):
+        evs = load_events(os.path.join(root, name, "timeline"))
+        g = [(e["t_start"], e["t"], e.get("new_tokens") or 0) for e in evs if e["ev"] == "gen_end"]
+        return g, LoadProfile([(a, b) for a, b, _ in g])
+
+    data = {n: gens_of(n) for n in names}
+    curves = {n: fit_curve(*data[n]) for n in names}
+    print("\n| curve fitted on | predicts | median abs. error, with load | without load | same, load > 16: with | without |")
+    print("|---|---|---|---|---|---|")
+    for src in names:
+        for dst in names:
+            if src == dst:
+                continue
+            gens, prof = data[dst]
+            c = curves[src]
+            rows = []  # (load, error with load, error without)
+            for a, b, n in gens:
+                if b - a < 0.05 or n < 20:
+                    continue
+                dur, load = b - a, prof.mean_load(a, b)
+                rows.append((load, abs(n / c(load) - dur) / dur, abs(n / c(1) - dur) / dur))
+            hi = [x for x in rows if x[0] > 16]
+            med = lambda xs, i: f"{statistics.median([x[i] for x in xs]):.1%}" if xs else "-"
+            print(f"| {src} | {dst} | {med(rows, 1)} | {med(rows, 2)} | {med(hi, 1)} | {med(hi, 2)} |")
+
+
 if __name__ == "__main__":
     main()
+    _root = sys.argv[1] if len(sys.argv) > 1 else "results/tbench_full_b4n8"
+    curve_check(_root, sorted(n for n in os.listdir(_root) if os.path.isdir(os.path.join(_root, n, "timeline"))))
